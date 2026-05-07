@@ -1,0 +1,10 @@
+# Generated test results — live on the webserver, not tracked in the repo.
+# Use results/index.template.html to seed or repair the webserver's index.html.
+results/index.html
+results/recent.filename
+results/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
