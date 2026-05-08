@@ -67,7 +67,7 @@ class Configuration:
         self.spack = []
         self.envVars = {}
         self.url = ""
-        self.remoteHome = "/home/users/wspear"
+        self.remoteHome = ""  # set in scripts/local_settings.py
         configurations[self.name]=self
 
     def prepare(self):

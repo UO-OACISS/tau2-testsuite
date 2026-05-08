@@ -29,52 +29,49 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import configs  # noqa: E402 (import after path manipulation)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-LOCAL_HOME    = pathlib.Path.home()
-LOCAL_TESTTAU = LOCAL_HOME / "testtau"
-RESULTS_DIR   = LOCAL_TESTTAU / "results"
+REPO_ROOT   = SCRIPT_DIR.parent          # top-level tau2-testsuite/ directory
+REPO_NAME   = REPO_ROOT.name             # used to name the remote staging directory
+RESULTS_DIR = REPO_ROOT / "results"
 
-# ── Tunable settings ───────────────────────────────────────────────────────────
+# ── Tunable defaults (override in scripts/local_settings.py) ─────────────────
 
 # TAU git branch to check out before testing.
 TAU_BRANCH = "master"
-#TAU_BRANCH = "openmp-suspend"
-#TAU_BRANCH = "L0_decode"
-#TAU_BRANCH= "combine-wrappers"
-# TAU_BRANCH = "OMPT_ROCM"
-#TAU_BRANCH = "tune-start-stop"
 
-# Web / mail host.
-WEBHOST   = "yu"
-WEBPATH   = "~/public_html/tau_regression"
-EMAIL_TO   = "wjspear@gmail.com"
-EMAIL_FROM = "onboarding@resend.dev"
-SMTP_HOST  = "smtp.resend.com"
-SMTP_PORT  = 465
+# Web host to publish results to.  Leave empty to keep results in RESULTS_DIR.
+WEBHOST = ""
+WEBPATH = ""
+WEBURL  = ""   # Human-readable HTTP URL shown in the email, e.g. http://host/~user/tau_regression
+
+# Email.  Leave EMAIL_TO or EMAIL_FROM empty to disable email notifications.
+EMAIL_TO      = ""
+EMAIL_FROM    = ""
+SMTP_HOST     = ""
+SMTP_PORT     = 465
 SMTP_KEY_FILE = pathlib.Path.home() / ".resend_api_key"
 
 # Active platforms — config names as they appear in configs.configurations.
-# Comment / uncomment individual lines to enable or disable platforms.
-ACTIVE_PLATFORMS = [
-    "yu",
-    "pegasus",
-    "pegasus_intel",
-    "instinct",
-    "gilgamesh_nvhpc",
-    "gary",
-    "hopper1",
-    # "delphi",
-    # "delphi_intel",
-    # "delphi_pgi",
-    # "instinct_rocm",
-    # "omnia_rocm",
-    # "sever",
-    # "saturn",
-    # "miniyu",
-]
+# Set this list in local_settings.py.
+ACTIVE_PLATFORMS: list[str] = []
 
-# SSH keys loaded via keychain (used when running under cron/non-login shells).
-# Add key filenames here (basename only, relative to ~/.ssh/).
-KEYCHAIN_KEYS = ["id_rsa", "git_key_rsa"]
+# SSH keys for keychain (basename only, relative to ~/.ssh/).
+KEYCHAIN_KEYS: list[str] = []
+
+# Archive results to this path after publishing (pathlib.Path or str, or None).
+COLD_STORAGE = None
+
+# ── Local settings override ────────────────────────────────────────────────────
+# Copy scripts/local_settings.example.py → scripts/local_settings.py and fill
+# in your values.  That file is gitignored and never committed to the repo.
+try:
+    from local_settings import *  # noqa: F401, F403
+except ImportError:
+    print(
+        "WARNING: scripts/local_settings.py not found.\n"
+        "         Copy scripts/local_settings.example.py to "
+        "scripts/local_settings.py and fill in your site-specific settings.",
+        file=sys.stderr,
+    )
 
 # ── SSH agent bootstrap ────────────────────────────────────────────────────────
 
@@ -139,24 +136,44 @@ def log_error(msg: str) -> None:
 
 # ── Source update ──────────────────────────────────────────────────────────────
 
+# Git remote URLs used when cloning missing repositories.
+GIT_TAU2   = "git.nic.uoregon.edu:/gitroot/tau2"
+GIT_PDTKIT = "git.nic.uoregon.edu:/gitroot/pdtoolkit"
+
+
 def update_source() -> bool:
-    """git pull tau2 (checking out TAU_BRANCH) and pdtoolkit.
+    """Clone (if absent) or pull tau2 and pdtoolkit.
 
-    Returns False if a fatal error (bad branch) prevents a safe run.
+    Returns False if a fatal error prevents a safe run.
+    Git operations run without output capture so interactive credential
+    prompts remain visible on the console.
     """
-    tau2   = LOCAL_TESTTAU / "tau2"
-    pdtkit = LOCAL_TESTTAU / "pdtoolkit"
+    tau2   = REPO_ROOT / "tau2"
+    pdtkit = REPO_ROOT / "pdtoolkit"
 
+    # Clone tau2 if not present (credential prompts will appear on console).
     if not tau2.is_dir():
-        log_error(
-            f"FATAL: tau2 not found at {tau2}. "
-            "Aborting — no tests were run."
-        )
-        return False
+        print(f"  tau2 not found at {tau2} — cloning from {GIT_TAU2} …", flush=True)
+        r = subprocess.run(["git", "clone", GIT_TAU2, str(tau2)])
+        if r.returncode != 0:
+            log_error(
+                "FATAL: git clone of tau2 failed. "
+                "Cannot proceed without the TAU source tree."
+            )
+            return False
+
+    # Clone pdtoolkit if not present.
+    if not pdtkit.is_dir():
+        print(f"  pdtoolkit not found at {pdtkit} — cloning from {GIT_PDTKIT} …",
+              flush=True)
+        r = subprocess.run(["git", "clone", GIT_PDTKIT, str(pdtkit)])
+        if r.returncode != 0:
+            log_error("git clone of pdtoolkit failed — PDT-dependent tests may fail")
+            # Non-fatal: continue without pdtoolkit
 
     for path, name, do_checkout in [
-        (tau2,   "tau2",       True),
-        (pdtkit, "pdtoolkit",  False),
+        (tau2,   "tau2",      True),
+        (pdtkit, "pdtoolkit", False),
     ]:
         if not path.is_dir():
             log_error(f"{name} not found at {path}")
@@ -282,7 +299,7 @@ def ensure_npb() -> bool:
     import tempfile
     import shutil as _shutil
 
-    dest = LOCAL_TESTTAU / "tau2" / "examples" / NPB_DIR
+    dest = REPO_ROOT / "tau2" / "examples" / NPB_DIR
 
     if (dest / "Makefile").exists():
         _patch_npb_makedef(dest)
@@ -330,27 +347,31 @@ def ensure_npb() -> bool:
 
 # ── Local-to-remote copy ───────────────────────────────────────────────────────
 
+def _rsync_to(src: str, url: str, remote_home: str) -> None:
+    dest = f"{url}:{remote_home}/TAU_REGRESSION"
+    print(f"  rsync → {dest}", flush=True)
+    r = subprocess.run(["rsync", "-k", "--delete", "-az", "-q", src, dest])
+    if r.returncode != 0:
+        log_error(f"rsync to {url} failed (rc={r.returncode})")
+
+
 def local_copy(active_cfgs: list) -> None:
     """
-    rsync LOCAL_TESTTAU to each unique (url, remoteHome) pair in the active
-    platform list.  The tree lands at <remoteHome>/TAU_REGRESSION/testtau/ on
-    each remote host — matching the original runtests.sh localcopy() layout.
+    rsync REPO_ROOT to each unique (url, remoteHome) pair in the active
+    platform list sequentially.  The tree lands at
+    <remoteHome>/TAU_REGRESSION/<REPO_NAME>/ on each remote host.
     """
     seen: set[tuple[str, str]] = set()
-    src  = str(LOCAL_TESTTAU)
+    src  = str(REPO_ROOT)
 
     for cfg in active_cfgs:
-        if not cfg.url:
+        if not cfg.url or not cfg.remoteHome:
             continue
         key = (cfg.url, cfg.remoteHome)
         if key in seen:
             continue
         seen.add(key)
-        dest = f"{cfg.url}:{cfg.remoteHome}/TAU_REGRESSION"
-        print(f"  rsync → {dest}", flush=True)
-        r = subprocess.run(["rsync", "-k", "--delete", "-az", "-q", src, dest])
-        if r.returncode != 0:
-            log_error(f"rsync to {cfg.url} failed (rc={r.returncode})")
+        _rsync_to(src, cfg.url, cfg.remoteHome)
 
 
 # ── Per-platform remote SSH command ────────────────────────────────────────────
@@ -363,7 +384,7 @@ def _build_remote_cmd(platform: str, cfg) -> str:
     Generates the ssh command to copy the test script to its working directory and then run it.
     """
     runroot = cfg.runroot
-    dest    = f"{runroot}/TAU_REGRESSION/testtau-{platform}"
+    dest    = f"{runroot}/TAU_REGRESSION/{REPO_NAME}-{platform}"
 
     steps = [
         # Try module-load Python; tolerate failure (spack / system Python also work)
@@ -375,15 +396,17 @@ def _build_remote_cmd(platform: str, cfg) -> str:
         "cd $HOME/TAU_REGRESSION",
         (
             f"rsync --delete -az -q "
-            f"testtau/scripts testtau/tau2 {dest}"
+            f"{REPO_NAME}/scripts {REPO_NAME}/tau2 {dest}"
         ),
-        # Smart PDT: only rsync if changed, otherwise mark as skip-rebuild
+        # Smart PDT: rsync only when git HEAD differs, otherwise mark as skip-rebuild
         (
             f"if [[ ! -d {dest}/pdtoolkit ]]"
             f" || [[ ! -f {dest}/pdtoolkit/include/pdbAll.h ]]"
-            f" || ! diff -q -r testtau/pdtoolkit/CVS/ {dest}/pdtoolkit/CVS/ &>/dev/null"
+            f" || [[ \"$(git -C $HOME/TAU_REGRESSION/{REPO_NAME}/pdtoolkit"
+            f" rev-parse HEAD 2>/dev/null)\""
+            f" != \"$(git -C {dest}/pdtoolkit rev-parse HEAD 2>/dev/null)\" ]]"
             f"; then"
-            f"  rsync --delete -az -q testtau/pdtoolkit {dest};"
+            f"  rsync --delete -az -q {REPO_NAME}/pdtoolkit {dest};"
             f"  rm -rf {dest}/pdtoolkit/no-build;"
             f" else"
             f"  touch {dest}/pdtoolkit/no-build;"
@@ -460,16 +483,25 @@ def check_and_publish(date_dir: pathlib.Path, lprint, timing_lines: list | None 
     status  = "PASSED" if passed else "FAILED"
     lprint(f"Result: {status}")
 
-    # Copy dated results directory and index to web host
-    subprocess.run(["scp", "-r", str(date_dir),            f"{WEBHOST}:{WEBPATH}"], check=False)
-    subprocess.run(["scp", str(RESULTS_DIR / "index.html"),f"{WEBHOST}:{WEBPATH}"], check=False)
+    # Copy dated results directory and index to web host (skip if WEBHOST not set).
+    if WEBHOST:
+        subprocess.run(["scp", "-r", str(date_dir),            f"{WEBHOST}:{WEBPATH}"], check=False)
+        subprocess.run(["scp", str(RESULTS_DIR / "index.html"),f"{WEBHOST}:{WEBPATH}"], check=False)
+    else:
+        lprint(f"WARNING: WEBHOST not set — results kept locally in {date_dir}")
 
-    # Build email body, write to /tmp/today, scp, then send via mailx on webhost
+    # Build email body.
     body_lines = ["-- Testing Arch Suite --"]
     if timing_lines:
         body_lines.extend(timing_lines)
     body_lines.append(f"  Arch suite {status}")
-    body_lines.append("  See http://yu.nic.uoregon.edu/~wspear/tau_regression/ for more details")
+    if WEBHOST and WEBPATH:
+        if WEBURL:
+            body_lines.append(f"  Results: {WEBURL}")
+        else:
+            body_lines.append(f"  Results published to {WEBHOST}:{WEBPATH}")
+    else:
+        body_lines.append(f"  Results stored locally in {RESULTS_DIR}")
     body_lines.append("")
     if _errors:
         body_lines.append("Failures:")
@@ -481,7 +513,8 @@ def check_and_publish(date_dir: pathlib.Path, lprint, timing_lines: list | None 
     today = pathlib.Path("/tmp/today")
     today.write_text(body)
 
-    subprocess.run(["scp", str(today), f"{WEBHOST}:{WEBPATH}/today"], check=False)
+    if WEBHOST:
+        subprocess.run(["scp", str(today), f"{WEBHOST}:{WEBPATH}/today"], check=False)
 
     # Send mail via Resend SMTP (API key in ~/.resend_api_key, mode 600).
     msg = email.message.EmailMessage()
@@ -492,14 +525,20 @@ def check_and_publish(date_dir: pathlib.Path, lprint, timing_lines: list | None 
     msg["Date"]       = email.utils.formatdate()
     msg.set_content(body)
     if send_email:
-        try:
-            api_key = SMTP_KEY_FILE.read_text().strip()
-            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
-                smtp.login("resend", api_key)
-                smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_bytes())
-            lprint(f"Email sent to {EMAIL_TO}")
-        except Exception as exc:
-            log_error(f"Failed to send email: {exc}")
+        if not (EMAIL_TO and EMAIL_FROM and SMTP_HOST):
+            lprint(
+                "WARNING: Email settings incomplete — "
+                "set EMAIL_TO, EMAIL_FROM, and SMTP_HOST in local_settings.py."
+            )
+        else:
+            try:
+                api_key = SMTP_KEY_FILE.read_text().strip()
+                with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
+                    smtp.login("resend", api_key)
+                    smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_bytes())
+                lprint(f"Email sent to {EMAIL_TO}")
+            except Exception as exc:
+                log_error(f"Failed to send email: {exc}")
     else:
         lprint("Email skipped (--no-email)")
 
@@ -578,6 +617,12 @@ def main() -> int:
 
     # Resolve active configs (validate names at startup)
     platform_names = args.configs if args.configs else ACTIVE_PLATFORMS
+    if not platform_names:
+        print(
+            "WARNING: ACTIVE_PLATFORMS is empty — no tests will run.\n"
+            "         Set ACTIVE_PLATFORMS in scripts/local_settings.py.",
+            file=sys.stderr,
+        )
     active_cfgs = []
     for name in platform_names:
         if name not in configs.configurations:
@@ -644,10 +689,11 @@ def main() -> int:
         lprint(f"Ended at {datetime.datetime.now()}")
         lprint(f"Total errors: {len(_errors)}")
 
-    # Archive to cold storage once uploaded (matches original bash mv behaviour).
-    cold = LOCAL_HOME / "ColdStorage" / "regression_stuff"
-    cold.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(date_dir), str(cold))
+    # Archive to cold storage if COLD_STORAGE is configured in local_settings.py.
+    if COLD_STORAGE:
+        cold = pathlib.Path(COLD_STORAGE)
+        cold.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(date_dir), str(cold))
 
     return len(_errors)
 

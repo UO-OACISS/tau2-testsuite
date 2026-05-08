@@ -4,7 +4,14 @@ results/index.html
 results/recent.filename
 results/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*/
 
+# User-specific settings (copy from local_settings.example.py)
+scripts/local_settings.py
+
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
+
+# Downloaded test targets
+tau2/
+pdtoolkit/
