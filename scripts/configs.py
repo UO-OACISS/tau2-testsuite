@@ -2,6 +2,21 @@ import os
 
 configurations = {}
 
+# Subdirectory prefix used for every per-platform test tree.
+# Both runtests.py (controller) and tau_regression.py (remote worker) derive
+# the test root from this single constant via test_root().
+TESTDIR_PREFIX = "tau2-testsuite"
+
+
+def test_root(run_prefix: str, config_name: str) -> str:
+    """Return the canonical test-tree root for a given config on a given host.
+
+    The path follows the pattern::
+
+        <run_prefix>/TAU_REGRESSION/<TESTDIR_PREFIX>-<config_name>
+    """
+    return f"{run_prefix}/TAU_REGRESSION/{TESTDIR_PREFIX}-{config_name}"
+
 class Configuration:
     def __init__(self, name, arch):
         self.name = name

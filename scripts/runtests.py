@@ -285,7 +285,7 @@ def _patch_npb_makedef(npb_dir: pathlib.Path) -> None:
 def ensure_npb() -> bool:
     """
     Ensure NPB3.4-MPI is present at tau2/examples/NPB3.4-MPI inside the local
-    testtau tree (the only location used by the test suite).
+    tau2-testsuite tree (the only location used by the test suite).
 
     If the directory is already there, just re-apply the make.def patch
     (idempotent).  Otherwise, download NPB_URL, extract NPB3.4-MPI/ from the
@@ -384,7 +384,7 @@ def _build_remote_cmd(platform: str, cfg) -> str:
     Generates the ssh command to copy the test script to its working directory and then run it.
     """
     runroot = cfg.runroot
-    dest    = f"{runroot}/TAU_REGRESSION/{REPO_NAME}-{platform}"
+    dest    = configs.test_root(runroot, platform)
 
     steps = [
         # Try module-load Python; tolerate failure (spack / system Python also work)
@@ -450,6 +450,8 @@ def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False
             else:
                 if rc != 0:
                     log_error(f"{name} exited with code {rc}")
+                else:
+                    print(f"{name} completed successfully.", flush=True)
     print("All platform tests complete.", flush=True)
 
 

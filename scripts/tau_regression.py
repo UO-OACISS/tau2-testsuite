@@ -86,7 +86,8 @@ def end(code):
     if (errorsFound == 0):
         outputHeader("No Errors!")
     else:
-        error("Failure: Encountered %d errors" % errorsFound)
+        output("Failure: Encountered %d errors" % errorsFound, "1", "red")
+        
 
     if (warningsFound == 0):
         outputHeader("No Warnings!")
@@ -96,7 +97,7 @@ def end(code):
     sys.exit(errorsFound)
 
 def usage():
-    print("Usage: testtau.py <configuration> <run root path (optional)>")
+    print("Usage: tau_regression.py <configuration> <run root path (optional)>")
     sys.exit(-1)
 
 # System call. Command to be run. Timeout time. Enclose output in details tags? Print error output?
@@ -892,7 +893,7 @@ config=configs.configurations[selectedConfig]
 
 #############################
 
-TEST_ROOT = run_prefix + "/TAU_REGRESSION/testtau" + dirsuf
+TEST_ROOT = configs.test_root(run_prefix, selectedConfig)
 TAU_ROOT = TEST_ROOT + "/tau2"
 
 # config.basedir overrides run_prefix for the test tree root.  Useful when
@@ -901,7 +902,7 @@ TAU_ROOT = TEST_ROOT + "/tau2"
 # (Note: this is independent of config.runroot, which controls where runtests.py
 # rsyncs files and is the normal way to redirect the full automated run.)
 if config.basedir != "":
-    TEST_ROOT = config.basedir + "/TAU_REGRESSION/testtau" + dirsuf
+    TEST_ROOT = configs.test_root(config.basedir, selectedConfig)
     TAU_ROOT = TEST_ROOT + "/tau2"
 
 os.environ["TAU_ROOT"] = TAU_ROOT
@@ -914,10 +915,15 @@ config.regressionTime = now.strftime("%T")
 
 print("<HTML><head><meta charset=\"utf-8\"><style>\npre {\n    white-space: pre-wrap;       /* Since CSS 2.1 */\n    white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */\n    white-space: -pre-wrap;      /* Opera 4-6 */\n    white-space: -o-pre-wrap;    /* Opera 7 */\n    word-wrap: break-word;       /* Internet Explorer 5.5+ */\n}\n</style></head>\n")  # <PRE>
 
-chdir(TAU_ROOT)
+if chdir(TAU_ROOT) != 0:
+    error("TAU_ROOT not found — cannot continue")
+    end(-1)
 
 system("git branch", timeout=0, reportTime=False)
-config.gitHash = check_output(["git", "rev-parse", "HEAD"]).rstrip()
+try:
+    config.gitHash = check_output(["git", "rev-parse", "HEAD"]).rstrip()
+except Exception:
+    config.gitHash = b"unknown"
 
 outputHeader("Configuration: " + config.name)
 
