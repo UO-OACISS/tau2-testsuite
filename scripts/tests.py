@@ -237,7 +237,8 @@ class OutputTester:
         self.testCommands = testCommands
 
 rocmTest = TestApp("gpu/roctx", "./MT", tauExample=True)
-rocmTest.buildCommand = "hipcc MatrixTranspose.cpp -o MT -I/opt/rocm/roctracer/include/ -L/opt/rocm/roctracer/lib/ -lroctx64 -lroctracer64"
+rocmTest.buildCommand = "hipcc MatrixTranspose.cpp -o MT -I$(hipconfig --rocmpath)/roctracer/include/ -I$(hipconfig --rocmpath)/include/roctracer -L$(hipconfig --rocmpath)/roctracer/lib/ -L$(hipconfig --rocmpath)/lib/ -lroctx64 -lroctracer64"
+#"hipcc MatrixTranspose.cpp -o MT -I/opt/rocm/roctracer/include/ -L/opt/rocm/roctracer/lib/ -lroctx64 -lroctracer64"
 rocmTest.tauBuilders.remove(CompInstTauBuild)
 rocmTest.tauExec.clear()
 rocmTest.tauExec.append(rocmExec)
