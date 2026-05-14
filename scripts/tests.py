@@ -59,24 +59,60 @@ class TauEnv:
     def __init__(self, name):
         self.name = name
         self.environment = {"TAU_TRACE": "1", "TAU_PROFILE": "1", "TAU_TRACK_MESSAGE": "1", "TAU_COMM_MATRIX": "1", "TAU_TRACK_IO_PARAMS": "1", "OMP_NUM_THREADS": "4", "SCOREP_PROFILING_FORMAT": "TAU_SNAPSHOT",
-                            "TAU_THROTTLE_PERCALL": "50", "TAU_METRICS": "TIME", "TAU_CALLPATH": "1"}  # , "TAU_EBS_UNWIND":"1"}  # ,"TAU_CALLSITE":"1","TAU_VERBOSE":"1", "TAU_TRACK_HEADROOM":"1","TAU_TRACK_HEAP":"1",
+                            "TAU_THROTTLE_PERCALL": "50", "TAU_METRICS": "TIME", "TAU_CALLPATH": "1", "TAU_EBS_PERIOD": "5000"}  # , "TAU_EBS_UNWIND":"1"}  # ,"TAU_CALLSITE":"1","TAU_VERBOSE":"1", "TAU_TRACK_HEADROOM":"1","TAU_TRACK_HEAP":"1",
+        # Set requiresMPI=True on environments that only apply to MPI tests (e.g. mergedEnv).
+        self.requiresMPI = False
+        # Set requiresPAPI=True on environments that require a PAPI-enabled build (e.g. papiEnv).
+        self.requiresPAPI = False
 
-    def setTauRunEnvironment(self, config):
+    def isCompatibleWith(self, test, config):
+        """Return False if this environment should be skipped for the given test and config."""
+        if self.requiresMPI and not test.useMPI:
+            return False
+        if self.requiresPAPI and config.papi == "":
+            return False
+        return True
+
+    def resolveFor(self, config, tauExec):
+        """Return a resolved copy of the environment dict for this (config, tauExec) combination.
+
+        This leaves self.environment unchanged and encodes all runtime decisions
+        (metrics selection, trace suppression for EBS/memory, callsite availability)
+        in the returned dict rather than in the driver loop.
+        """
+        env = dict(self.environment)
+        # Metrics: GPU+CUDA builds use cuda-specific metrics; all others use standard metrics.
+        if tauExec.gpu and config.cuda != "":
+            env["TAU_METRICS"] = "TIME:" + config.cudametrics
+        else:
+            env["TAU_METRICS"] = "TIME:" + config.metrics
+        # EBS and memory profiling are incompatible with tracing.
+        if tauExec.useEBS or tauExec.useMemory:
+            env["TAU_TRACE"] = "0"
+        # Callsite unwinding requires libunwind.
+        if config.libunwind == "":
+            env["TAU_CALLSITE"] = "0"
+        return env
+
+    def setTauRunEnvironment(self, config, resolvedEnv=None):
         print("<details><summary><b>Set Run Environment</b></summary>")
         print(os.getcwd() + ">")
-        for var, val in self.environment.items():
+        env = resolvedEnv if resolvedEnv is not None else self.environment
+        for var, val in env.items():
             setEnviron(var, val, config)
         print("</details>")
 
-    def unsetTauRunEnvironment(self, config):
+    def unsetTauRunEnvironment(self, config, resolvedEnv=None):
         print("<details><summary><b>Clear Run Environment</b></summary>")
         print(os.getcwd() + ">")
-        for var, val in self.environment.items():
+        env = resolvedEnv if resolvedEnv is not None else self.environment
+        for var, val in env.items():
             unsetEnviron(var, config)
         print("</details>")
 
 defaultEnv = TauEnv("defaultEnv")
 mergedEnv = TauEnv("mergedEnv")
+mergedEnv.requiresMPI = True
 
 TAU_PROFILE_FORMAT = "TAU_PROFILE_FORMAT"
 mergedEnv.environment[TAU_PROFILE_FORMAT] = "merged"
@@ -90,6 +126,7 @@ compEnv = TauEnv("compEnv")
 compEnv.environment["TAU_COMPENSATE"] = "1"
 
 papiEnv = TauEnv("papiEnv")
+papiEnv.requiresPAPI = True
 papiEnv.environment["TAU_METRICS"] = "time:PAPI_L1_DCM"
 
 otf2Env = TauEnv("otf2Env")
@@ -259,10 +296,10 @@ ompCxx = TestApp("openmp/multitask_openmp", "./multitask_openmp", tauExample=Tru
 ompCxx.useMPI = False
 ompCxx.useTauComp = True
 
-NPBBT = TestApp("NPB3.4-MPI", "./bin/bt.S.x", tauExample=True)
+NPBBT = TestApp("NPB3.4-MPI", "./bin/bt.W.x", tauExample=True)
 NPBBT.useMPI = True
 NPBBT.useTauComp = True
-NPBBT.buildCommand = "make clean; make bt NPROCS=4 CLASS=S"
+NPBBT.buildCommand = "make clean; make bt NPROCS=4 CLASS=W"
 # TESTING NPB ALONE
 # NPBBT.tauBuilders.remove(DefaultTauBuild)
 # NPBBT.tauExec.remove(noExec)

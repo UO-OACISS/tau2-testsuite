@@ -311,34 +311,50 @@ tmpconfig.spack = ["openmpi@4.1.5%rocmcc"]
 tmpconfig.url = "instinct.nic.uoregon.edu"
 
 tmpconfig = omnia_rocm = ModuleConfiguration("omnia_rocm", "x86_64")
-tmpconfig.baseConfig = "-c++=hipcc -cc=amdclang"
+tmpconfig.baseConfig = "-c++=amdclang++ -cc=amdclang"
 tmpconfig.f90 = "-fortran=amdflang"
 tmpconfig.pdt_config = " -GNU "
-tmpconfig.papi = "-papi=/packages/papi/6.0.0.1" # /packages/papi/6.0.0.1"
+#tmpconfig.papi = "-papi=/packages/papi/6.0.0.1" # /packages/papi/6.0.0.1"
 tmpconfig.libunwind = "-unwind=download"
-tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
+#tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
+tmpconfig.rocm = "-roctracer=/opt/rocm-7.1.1 -rocprofiler=/opt/rocm-7.1.1 -rocm"
 tmpconfig.mpiBefore = "mpirun -np 4 "
 tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g3\ -Og"
-#tmpconfig.modules=[ "rocm/5.5.0" , "mpich/031021-llvm12" ]
-#tmpconfig.spack = ["openmpi@4.1.5%rocmcc"]
+tmpconfig.modules=["openmpi/4.1.8_gcc13.2.0", "rocm/7.1.1", "java"] #[ "rocm/5.5.0" , "mpich/031021-llvm12" ]
+#tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
 tmpconfig.url = "omnia"
 
 
 
 tmpconfig = sever = Configuration("sever", "x86_64")
 tmpconfig.baseConfig = "-cc=icx -c++=icpx"
-tmpconfig.f90 = "-fortran=intel"
+#tmpconfig.f90 = "-fortran=intel"
 tmpconfig.level_zero="-level_zero"
 tmpconfig.opencl="-opencl"
 #tmpconfig.pdt_config = " -GNU "
-tmpconfig.papi = "-papi=/packages/papi/6.0.0.1"
+#tmpconfig.papi = "-papi=/packages/papi/6.0.0.1"
 tmpconfig.libunwind = "-unwind=download"
 tmpconfig.mpiBefore = "mpirun -np 4 "
 tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g3\ -Og"
 tmpconfig.url = "sever.nic.uoregon.edu"
+tmpconfig.spack = ["openjdk"]
 
+
+
+tmpconfig = headroom = Configuration("headroom", "x86_64")
+tmpconfig.baseConfig = "-cc=icx -c++=icpx"
+tmpconfig.f90 = "-fortran=intel"
+tmpconfig.level_zero="-level_zero"
+tmpconfig.opencl="-opencl"
+#tmpconfig.pdt_config = " -GNU "
+#tmpconfig.papi = "-papi=/packages/papi/6.0.0.1"
+tmpconfig.libunwind = "-unwind=download"
+tmpconfig.mpiBefore = "mpirun -np 4 "
+tmpconfig.mpi = "-mpi"
+#tmpconfig.useropt = " -useropt=-g3\ -Og"
+tmpconfig.url = "headroom.nic.uoregon.edu"
 
 
 tmpconfig = saturn = Configuration("saturn", "x86_64")
@@ -400,7 +416,7 @@ tmpconfig.baseConfig = "-c++=CC -cc=cc"  #-c++=nvc++ -cc=nvc -pdt_c++=g++"
 tmpconfig.papi = "-papi=/packages/papi/6.0.0.1"
 #tmpconfig.libunwind = "-unwind=download"
 #tmpconfig.rocm = "-roctracer=/opt/rocm-5.2.0/roctracer/ -rocprofiler=/opt/rocm-5.2.0/rocprofiler/ -rocm"
-tmpconfig.mpiBefore = "srun  -n 4 " #--mca btl self,tcp  --mca orte_base_help_aggregate 0
+tmpconfig.mpiBefore = "srun -p cray  -n 4 " #--mca btl self,tcp  --mca orte_base_help_aggregate 0
 tmpconfig.mpi = "-mpi"
 tmpconfig.useropt = " -useropt=-g\\ -O2"
 tmpconfig.mpiCommand = "srun"

@@ -725,9 +725,47 @@ def SaveCores(bin_path, test_name, start_time_epoch):
         os.rmdir(arch_dir)
         output("No cores found in any location.", "3", "darkorange")
 
+def checkSlurmAvailability(config):
+    """Check that required SLURM partitions have at least one usable node.
+
+    Scans mpiBefore and seqBefore for '-p <partition>'.  If a partition is
+    found and sinfo is available, confirms that the partition has at least one
+    idle/allocated/mixed/reserved node.  Aborts the test run if no usable
+    nodes are found, preventing the run from hanging on a down cluster.
+    """
+    partitions = set()
+    for field in (config.mpiBefore, config.seqBefore):
+        m = re.search(r'-p\s+(\S+)', field)
+        if m:
+            partitions.add(m.group(1))
+
+    if not partitions:
+        return
+
+    # If sinfo is not present this is not a SLURM system; skip the check.
+    if subprocess.run(["which", "sinfo"], capture_output=True).returncode != 0:
+        return
+
+    for partition in sorted(partitions):
+        output(f"Checking SLURM partition availability: {partition}")
+        retval = systemq(
+            f"sinfo -p {partition} -h -t idle,alloc,mixed,reserved -o \"%n\" | grep -q ."
+        )
+        if retval != 0:
+            error(f"No available nodes in SLURM partition '{partition}' — aborting test run!")
+            end(-1)
+        retval = systemq(
+            f"srun -p {partition} --job-name=health_check --immediate=5 true"
+        )
+        if retval != 0:
+            error(f"srun timed out on SLURM partition '{partition}' — aborting test run!")
+            end(-1)
+
+        output(f"SLURM partition '{partition}': nodes available.")
+
+
 def RunAllTests(config, buildApps):
     hasProf = True
-    hasTrace = True
 #    if config.scorep == "" and ScorepConf in buildApps:
 #        buildApps.remove(ScorepConf)
 
@@ -787,32 +825,11 @@ def RunAllTests(config, buildApps):
                             if len(tauTest.tauEnv) <1:
                                 warning("No run environments for executor!")
                             for envSet in tauTest.tauEnv:
-                                # Don't run papi tests if papi isn't in the configuration
-                                if(envSet is papiEnv and config.papi == ""):
+                                if not envSet.isCompatibleWith(tauTest, config):
                                     continue
 
-                                # mergedEnv only makes sense with MPI so skip mergedEnv for non-MPI tests
-                                if((not tauTest.useMPI) and envSet is mergedEnv):
-                                    continue
-
-                                if(tauExec.gpu == True and config.cuda != ""):
-                                    envSet.environment["TAU_METRICS"] = "TIME:" + \
-                                        config.cudametrics
-                                else:
-                                    envSet.environment["TAU_METRICS"] = "TIME:" + \
-                                        config.metrics
-
-                                #TODO: This should logic should be controled in traces.py
-                                if tauExec.useEBS:
-                                    envSet.environment["TAU_TRACE"] = "0"
-                                    hasTrace = False
-
-                                if tauExec.useMemory:
-                                    envSet.environment["TAU_TRACE"] = "0"
-                                    hasTrace = False
-
-                                if config.libunwind == "":
-                                    envSet.environment["TAU_CALLSITE"] = "0"
+                                resolvedEnv = envSet.resolveFor(config, tauExec)
+                                hasTrace = resolvedEnv.get("TAU_TRACE", "1") != "0"
 
                                 runres = 0
                                 testName = tauBuild.execArgs + "_" + tauTest.buildDir + "_" + \
@@ -821,7 +838,7 @@ def RunAllTests(config, buildApps):
                                             "tau_build_name": tauTestBuild.name, "tau_exec_name": tauExec.name, "tau_env_name": envSet.name}
                                 testName = testName.replace('/', '-')
                                 outputHeader("Running " + testName)
-                                envSet.setTauRunEnvironment(config)
+                                envSet.setTauRunEnvironment(config, resolvedEnv)
                                 FullClean()
                                 #runs=10
                                 test_start_time = datetime.datetime.now().timestamp()
@@ -835,7 +852,7 @@ def RunAllTests(config, buildApps):
                                 if(runres == 0): # and tauBuild != ScorepConf):
                                     output("Examining Output")
                                     useXml = False
-                                    if TAU_PROFILE_FORMAT in envSet.environment and envSet.environment[TAU_PROFILE_FORMAT] == "merged":
+                                    if TAU_PROFILE_FORMAT in resolvedEnv and resolvedEnv[TAU_PROFILE_FORMAT] == "merged":
                                         useXml = True
                                     CheckOutput(
                                         config, hasTrace, hasProf, useXml, testName, testType)
@@ -843,9 +860,7 @@ def RunAllTests(config, buildApps):
                                     SaveCores(tauTest.binName, tauTest.buildDir + "_" +
                                               tauTestBuild.name + "_" + tauExec.name + "_" + envSet.name,
                                               test_start_time)
-                                envSet.unsetTauRunEnvironment(config)
-                                envSet.environment["TAU_TRACE"] = "1"
-                                hasTrace = True
+                                envSet.unsetTauRunEnvironment(config, resolvedEnv)
 
                     else:
                         warning("Build Failed, skipping Execution!")
@@ -920,6 +935,7 @@ if chdir(TAU_ROOT) != 0:
     end(-1)
 
 system("git branch", timeout=0, reportTime=False)
+system("git log -1 --pretty=format:'%h  %ad  %s' --date=format:'%Y-%m-%d %H:%M'", timeout=0, reportTime=False)
 try:
     config.gitHash = check_output(["git", "rev-parse", "HEAD"]).rstrip()
 except Exception:
@@ -956,6 +972,8 @@ if useSpack:
     spackEnv=check_output([spackCommand], shell=True, universal_newlines=True)
     spackEnv="eval "+spackEnv+" " 
 printSysInfo(config)
+
+checkSlurmAvailability(config)
 
 systemq("rm -rf " + TAU_ROOT + "/" + config.arch)
 

@@ -390,7 +390,7 @@ def _build_remote_cmd(platform: str, cfg) -> str:
         # Try module-load Python; tolerate failure (spack / system Python also work)
         "{ module load python 2>/dev/null && unset PYTHONHOME; } || true",
         f"export PYTHONPATH={dest}/scripts",
-        "ulimit -c unlimited",
+        "ulimit -c unlimited || true",
         f"mkdir -p {dest}",
         # Sync scripts / tau2 from the remote home staging area
         "cd $HOME/TAU_REGRESSION",
@@ -416,7 +416,7 @@ def _build_remote_cmd(platform: str, cfg) -> str:
         f"cd {runroot}",
         f"time python3 {dest}/scripts/tau_regression.py {platform} {runroot}",
     ]
-    return "; ".join(steps)
+    return " && ".join(steps)
 
 
 def _run_platform(platform: str, cfg, html_path: pathlib.Path) -> int:
@@ -660,6 +660,19 @@ def main() -> int:
             lprint("FATAL: source update failed — skipping tests, sending error email.")
             check_and_publish(date_dir, lprint, send_email=not args.no_email)
         else:
+            tau2_path = str(REPO_ROOT / "tau2")
+            branch_r = subprocess.run(
+                ["git", "-C", tau2_path, "branch"],
+                capture_output=True, text=True,
+            )
+            log_r = subprocess.run(
+                ["git", "-C", tau2_path, "log", "-1",
+                 "--pretty=format:%h  %ad  %s", "--date=format:%Y-%m-%d %H:%M"],
+                capture_output=True, text=True,
+            )
+            lprint(f"TAU git branch:\n{branch_r.stdout.rstrip()}")
+            lprint(f"TAU HEAD commit: {log_r.stdout.strip()}")
+
             t0 = time.monotonic()
             lprint("=== ensure_npb ===")
             ensure_npb()
