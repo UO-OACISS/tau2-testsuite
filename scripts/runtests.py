@@ -422,10 +422,21 @@ def _build_remote_cmd(platform: str, cfg) -> str:
 def _run_platform(platform: str, cfg, html_path: pathlib.Path) -> int:
     """SSH into cfg.url and run tau_regression.py, capturing all output to html_path."""
     inner = _build_remote_cmd(platform, cfg)
-    cmd   = ["ssh", cfg.url, "bash -l -c " + shlex.quote(inner)]
+    cmd   = [
+        "ssh",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=30",
+        cfg.url,
+        "bash -l -c " + shlex.quote(inner),
+    ]
     print(f"  Launching {platform} → {cfg.url}", flush=True)
     with html_path.open("w", errors="replace") as fh:
-        result = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT)
+        result = subprocess.run(
+            cmd,
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+        )
     return result.returncode
 
 
