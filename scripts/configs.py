@@ -75,7 +75,7 @@ class Configuration:
         self.cleanBFD=False #Turn this on for PGI/NVHPC. We need to configure tau without pgi to get a successful binutils build
         self.minimal=False
         self.otf2="-otf=download"
-        self.useropt=" -syscall  -useropt=-g\\ -Og"
+        self.useropt=" -syscall  -useropt=-g\\ -O2\\ -DDEBUG_ASSERT\\ -DTAU_EXECINFO"
         self.opencl=""
         self.level_zero=""
         self.opencl=""
@@ -290,7 +290,7 @@ tmpconfig.libunwind = "-unwind=download"
 #tmpconfig.rocm = "-roctracer=/opt/rocm/roctracer/ -rocprofiler=/opt/rocm/rocprofiler/ -rocm -cc=hipcc"
 tmpconfig.mpiBefore = "mpirun -np 4 "
 tmpconfig.mpi = "-mpi"
-tmpconfig.useropt = " -useropt=-g\\ -O0 "
+#tmpconfig.useropt = " -useropt=-g\\ -O0 "
 #\ -fPIE\ -fPIC
 #tmpconfig.modules=["rocm/5.6.0"]
 tmpconfig.url = "instinct.nic.uoregon.edu"
@@ -313,6 +313,7 @@ tmpconfig.url = "instinct.nic.uoregon.edu"
 tmpconfig = omnia_rocm = ModuleConfiguration("omnia_rocm", "x86_64")
 tmpconfig.baseConfig = "-c++=amdclang++ -cc=amdclang"
 tmpconfig.f90 = "-fortran=amdflang"
+tmpconfig.envVars = {'LEGACY_FFLAGS': ''}  # amdflang rejects -std=legacy
 tmpconfig.pdt_config = " -GNU "
 #tmpconfig.papi = "-papi=/packages/papi/6.0.0.1" # /packages/papi/6.0.0.1"
 tmpconfig.libunwind = "-unwind=download"
@@ -401,7 +402,7 @@ tmpconfig.papi = "-papi=/packages/papi/6.0.0.1"
 #tmpconfig.libunwind = "-unwind=download"
 tmpconfig.mpiBefore = "srun -p greece  -n 4"
 tmpconfig.mpi = "-mpi"
-tmpconfig.useropt = " -useropt=-g\\ -O2"
+#tmpconfig.useropt = " -useropt=-g\\ -O2"
 tmpconfig.modules=[ "craype-x86-rome", "PrgEnv-nvidia", "gcc/12.2.0" ] #, "nvhpc/23.5" ]
 # No spack mpich: use Cray PE MPI (cray-mpich) so mpicc/mpicxx wrap nvc/nvc++
 tmpconfig.cleanBFD=True
@@ -418,9 +419,9 @@ tmpconfig.papi = "-papi=/packages/papi/6.0.0.1"
 #tmpconfig.rocm = "-roctracer=/opt/rocm-5.2.0/roctracer/ -rocprofiler=/opt/rocm-5.2.0/rocprofiler/ -rocm"
 tmpconfig.mpiBefore = "srun -p cray  -n 4 " #--mca btl self,tcp  --mca orte_base_help_aggregate 0
 tmpconfig.mpi = "-mpi"
-tmpconfig.useropt = " -useropt=-g\\ -O2"
+#tmpconfig.useropt = " -useropt=-g\\ -O2"
 tmpconfig.mpiCommand = "srun"
-tmpconfig.envVars={'DEFAULT_FFLAGS':'-O3'}
+tmpconfig.envVars={'DEFAULT_FFLAGS':'-O3', 'LEGACY_FFLAGS':''}  # Cray ftn rejects -std=legacy
 tmpconfig.url = "gary.nic.uoregon.edu"
 tmpconfig.runroot = "/home/users/wspear/regression"
 #tmpconfig.modules=[ "craype-x86-rome", "PrgEnv-nvhpc", "gcc/12.2.0",  "nvhpc/23.5"  ]  #"gcc/12.2"]  #"nvhpc/22.11"]

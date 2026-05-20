@@ -249,32 +249,47 @@ def _patch_npb_makedef(npb_dir: pathlib.Path) -> None:
         text = re.sub(r"^(MPICC\s*=\s*).*$", r"\1tau_cc.sh", text, flags=re.MULTILINE)
         changed = True
 
-    # Replace a plain "FFLAGS = <val>" line with the DEFAULT_FFLAGS/?=/EXTRA_FFLAGS
-    # pattern so that callers can pass EXTRA_FFLAGS=-noswitcherror (or similar).
-    # Also inject -std=legacy, required for gfortran 10+ to accept NPB's older
-    # Fortran style.  Guard: skip if already fully patched.
-    if "EXTRA_FFLAGS" not in text:
-        def _fflags_replacer(m: re.Match) -> str:
-            base = m.group(1).strip()
-            if "-std=legacy" not in base:
-                base = base + " -std=legacy"
-            return f"DEFAULT_FFLAGS ?= {base}\nFFLAGS = ${{DEFAULT_FFLAGS}} ${{EXTRA_FFLAGS}}"
-        new_text = re.sub(
-            r"^FFLAGS\s*=\s*(.+)$", _fflags_replacer, text, flags=re.MULTILINE
-        )
-        if new_text != text:
-            text    = new_text
-            changed = True
-    elif "-std=legacy" not in text:
-        # Already has EXTRA_FFLAGS but missing -std=legacy (older patch applied).
-        new_text = re.sub(
-            r"^(DEFAULT_FFLAGS\s*\?=\s*.+)$",
-            lambda m: m.group(1) + " -std=legacy",
-            text, flags=re.MULTILINE
-        )
-        if new_text != text:
-            text    = new_text
-            changed = True
+    # Replace a plain "FFLAGS = <val>" line with the DEFAULT_FFLAGS / LEGACY_FFLAGS
+    # / EXTRA_FFLAGS pattern.  LEGACY_FFLAGS holds -std=legacy, which is required
+    # by gfortran 10+ but rejected by amdflang (and similar compilers).  Platforms
+    # that cannot accept -std=legacy can override it by setting LEGACY_FFLAGS=
+    # in their environment (e.g. via config.envVars in configs.py).
+    # Guard: skip if already fully patched.
+    if "LEGACY_FFLAGS" not in text:
+        if "EXTRA_FFLAGS" not in text:
+            # Fresh patch: introduce all three variables at once.
+            def _fflags_replacer(m: re.Match) -> str:
+                base = m.group(1).strip()
+                return (
+                    f"DEFAULT_FFLAGS ?= {base}\n"
+                    f"LEGACY_FFLAGS ?= -std=legacy\n"
+                    f"FFLAGS = ${{DEFAULT_FFLAGS}} ${{LEGACY_FFLAGS}} ${{EXTRA_FFLAGS}}"
+                )
+            new_text = re.sub(
+                r"^FFLAGS\s*=\s*(.+)$", _fflags_replacer, text, flags=re.MULTILINE
+            )
+            if new_text != text:
+                text    = new_text
+                changed = True
+        else:
+            # Old patch (EXTRA_FFLAGS present, LEGACY_FFLAGS absent):
+            # extract any -std=legacy from DEFAULT_FFLAGS into its own variable.
+            def _split_legacy(m: re.Match) -> str:
+                val = re.sub(r"\s*-std=legacy", "", m.group(1)).strip()
+                return f"DEFAULT_FFLAGS ?= {val}\nLEGACY_FFLAGS ?= -std=legacy"
+            new_text = re.sub(
+                r"^DEFAULT_FFLAGS\s*\?=\s*(.+)$",
+                _split_legacy, text, flags=re.MULTILINE
+            )
+            # Insert LEGACY_FFLAGS into the FFLAGS expansion.
+            new_text = re.sub(
+                r"^(FFLAGS\s*=\s*\$\{DEFAULT_FFLAGS\})(\s*\$\{EXTRA_FFLAGS\})$",
+                r"\1 ${LEGACY_FFLAGS}\2",
+                new_text, flags=re.MULTILINE
+            )
+            if new_text != text:
+                text    = new_text
+                changed = True
 
     if changed:
         make_def.write_text(text)

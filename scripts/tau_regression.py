@@ -93,7 +93,7 @@ def end(code):
         outputHeader("No Warnings!")
     else:
         warning("Caution: Encountered %d warnings" % warningsFound)
-    print("</HTML>\n")  # <PRE>
+    print("</body>\n</html>\n")  # <PRE>
     sys.exit(errorsFound)
 
 def usage():
@@ -793,7 +793,7 @@ def RunAllTests(config, buildApps):
                         output("Build doesn't recognize TAU_OPTIONS. Skipping")
                         continue
 
-                    output("Building with TAU Options: " +
+                    output("Building " + tauTest.buildDir + " with TAU Options: " +
                                  " ".join(tauTestBuild.tauOptions),"2","purple")
                     tauTestBuild.setTauOptions(config, tauBuild.stub)
                     system("env | grep -i tau")
@@ -837,7 +837,7 @@ def RunAllTests(config, buildApps):
                                 testType = {"tau_exec_args": tauBuild.execArgs, "test_application": tauTest.buildDir,
                                             "tau_build_name": tauTestBuild.name, "tau_exec_name": tauExec.name, "tau_env_name": envSet.name}
                                 testName = testName.replace('/', '-')
-                                outputHeader("Running " + testName)
+                                outputHeader("Running " + tauTest.buildDir + " with " + testName)
                                 envSet.setTauRunEnvironment(config, resolvedEnv)
                                 FullClean()
                                 #runs=10
@@ -928,7 +928,76 @@ config.regressionDate = now.strftime("%D")
 config.regressionTime = now.strftime("%T")
 
 
-print("<HTML><head><meta charset=\"utf-8\"><style>\npre {\n    white-space: pre-wrap;       /* Since CSS 2.1 */\n    white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */\n    white-space: -pre-wrap;      /* Opera 4-6 */\n    white-space: -o-pre-wrap;    /* Opera 7 */\n    word-wrap: break-word;       /* Internet Explorer 5.5+ */\n}\n</style></head>\n")  # <PRE>
+print("""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><style>
+body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: monospace, sans-serif;
+    padding: 1rem;
+    scroll-behavior: smooth;
+}
+pre {
+    white-space: pre-wrap;       /* Since CSS 2.1 */
+    white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */
+    white-space: -pre-wrap;      /* Opera 4-6 */
+    white-space: -o-pre-wrap;    /* Opera 7 */
+    word-wrap: break-word;       /* Internet Explorer 5.5+ */
+    background: #12122a;
+    border-left: 3px solid #333;
+    padding: .4rem .6rem;
+    margin: .2rem 0;
+}
+details {
+    border-left: 3px solid #2a2a4a;
+    margin: .3rem 0;
+    padding-left: .5rem;
+}
+summary {
+    cursor: pointer;
+    padding: .2rem 0;
+}
+summary:hover { color: #a0c0ff; }
+h1, h2, h3 { margin: .4rem 0; }
+/* Remap legacy named font-color attributes for dark background */
+font[color="green"]      { color: #7ec87e !important; }
+font[color="red"]        { color: #e08080 !important; }
+font[color="blue"]       { color: #6fa8dc !important; }
+font[color="darkorange"] { color: #f4a460 !important; }
+font[color="purple"]     { color: #b07fd4 !important; }
+#toggle-bar {
+    position: sticky;
+    top: 0;
+    background: #12122a;
+    border-bottom: 1px solid #333;
+    padding: .3rem .6rem;
+    z-index: 10;
+}
+#toggle-bar button {
+    background: #252540;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    border-radius: 3px;
+    padding: .2rem .7rem;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: .85rem;
+    margin-right: .4rem;
+}
+#toggle-bar button:hover { background: #333360; }
+</style>
+<script>
+function toggleAll(open) {
+    document.querySelectorAll('details').forEach(d => d.open = open);
+}
+</script>
+</head>
+<body>
+<div id="toggle-bar">
+  <button onclick="toggleAll(true)">Expand all</button>
+  <button onclick="toggleAll(false)">Collapse all</button>
+</div>
+""")  # <PRE>
 
 if chdir(TAU_ROOT) != 0:
     error("TAU_ROOT not found — cannot continue")

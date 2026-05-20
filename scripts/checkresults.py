@@ -41,14 +41,15 @@ def main():
             if "Failure: Encountered" in line:
                 errors.append((html_path, line.strip()))
                 break
-        if "</HTML>" not in content:
+        if "</html>" not in content.lower():
             incomplete.append(html_path)
         else:
             successes.append(html_path)
 
-    # Remove files that had errors from successes
+    # Remove files that had errors from successes and incomplete
     error_fnames = {fname for fname, _ in errors}
     successes = [f for f in successes if f not in error_fnames]
+    incomplete = [f for f in incomplete if f not in error_fnames]
 
     found_error = bool(errors or incomplete)
     if found_error:
