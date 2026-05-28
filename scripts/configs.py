@@ -322,7 +322,8 @@ tmpconfig.rocm = "-roctracer=/opt/rocm-7.1.1 -rocprofiler=/opt/rocm-7.1.1 -rocm"
 tmpconfig.mpiBefore = "mpirun -np 4 "
 tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g3\ -Og"
-tmpconfig.modules=["openmpi/4.1.8_gcc13.2.0", "rocm/7.1.1", "java"] #[ "rocm/5.5.0" , "mpich/031021-llvm12" ]
+#tmpconfig.modules=["rocm/7.1.1", "java"] #[ "rocm/5.5.0" , "mpich/031021-llvm12" ] "openmpi/4.1.8_gcc13.2.0", 
+#tmpconfig.spack = ["openmpi"]
 #tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
 tmpconfig.url = "omnia"
 

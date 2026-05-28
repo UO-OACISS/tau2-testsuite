@@ -206,6 +206,33 @@ def update_source() -> bool:
     return True
 
 
+# ── Fatal-run sentinel HTML ──────────────────────────────────────────────────
+
+def write_fatal_html(date_dir: pathlib.Path, errors: list[str]) -> None:
+    """
+    Write a sentinel HTML file into date_dir so that checkresults.py records
+    a red index entry even when no platform tests were launched.  Uses the
+    same single-line format as tau_regression.py's output() so checkresults.py
+    picks up the "Failure: Encountered" marker on a bare text line.
+    """
+    import html as _html
+    n = len(errors)
+    err_word = "error" if n == 1 else "errors"
+    body = "\n".join(_html.escape(e) for e in errors)
+    content = (
+        "<!DOCTYPE html>\n<html>\n"
+        "<head><meta charset='utf-8'><title>Fatal Pre-Test Error</title></head>\n"
+        "<body>\n"
+        '<h1 id="anchor-0"><font color=red>\n'
+        f"Failure: Encountered {n} {err_word}\n"
+        "</font></h1>\n"
+        "<h3>The following fatal error(s) prevented any tests from running:</h3>\n"
+        f"<pre>\n{body}\n</pre>\n"
+        "</body>\n</html>\n"
+    )
+    (date_dir / "fatal_error.html").write_text(content)
+
+
 # ── NPB provisioning ──────────────────────────────────────────────────────────
 
 # NPB 3.4.4 standard suite — expands to NPB3.4/ with NPB3.4-MPI/ inside.
@@ -684,6 +711,7 @@ def main() -> int:
 
         if not source_ok:
             lprint("FATAL: source update failed — skipping tests, sending error email.")
+            write_fatal_html(date_dir, _errors)
             check_and_publish(date_dir, lprint, send_email=not args.no_email)
         else:
             tau2_path = str(REPO_ROOT / "tau2")

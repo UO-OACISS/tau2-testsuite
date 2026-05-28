@@ -793,8 +793,9 @@ def RunAllTests(config, buildApps):
                         output("Build doesn't recognize TAU_OPTIONS. Skipping")
                         continue
 
-                    output("Building " + tauTest.buildDir + " with TAU Options: " +
-                                 " ".join(tauTestBuild.tauOptions),"2","purple")
+                    output("Building " + tauTest.buildDir + " with: " +
+                           tauTestBuild.name, "2", "purple")
+                    #             " ".join(tauTestBuild.tauOptions),"2","purple")
                     tauTestBuild.setTauOptions(config, tauBuild.stub)
                     system("env | grep -i tau")
 
@@ -837,7 +838,8 @@ def RunAllTests(config, buildApps):
                                 testType = {"tau_exec_args": tauBuild.execArgs, "test_application": tauTest.buildDir,
                                             "tau_build_name": tauTestBuild.name, "tau_exec_name": tauExec.name, "tau_env_name": envSet.name}
                                 testName = testName.replace('/', '-')
-                                outputHeader("Running " + tauTest.buildDir + " with " + testName)
+                                #outputHeader("Running " + tauTest.buildDir + " with " + testName)
+                                outputHeader("Running " + tauTest.buildDir + "(" + tauTestBuild.name + ") with:" + envSet.name + ", " + tauExec.name + ", " + tauBuild.execArgs)
                                 envSet.setTauRunEnvironment(config, resolvedEnv)
                                 FullClean()
                                 #runs=10
