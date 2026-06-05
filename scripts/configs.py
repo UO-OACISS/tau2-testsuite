@@ -83,6 +83,7 @@ class Configuration:
         self.envVars = {}
         self.url = ""
         self.remoteHome = ""  # set in scripts/local_settings.py
+        self.python = "-python -pthread"
         configurations[self.name]=self
 
     def prepare(self):

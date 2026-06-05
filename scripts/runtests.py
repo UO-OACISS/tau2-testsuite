@@ -418,7 +418,7 @@ def local_copy(active_cfgs: list) -> None:
 
 # ── Per-platform remote SSH command ────────────────────────────────────────────
 
-def _build_remote_cmd(platform: str, cfg) -> str:
+def _build_remote_cmd(platform: str, cfg, profile_checks: bool = False) -> str:
     """
     Build the shell command string executed remotely via:
         ssh <url> bash -l -c '<cmd>'
@@ -456,14 +456,16 @@ def _build_remote_cmd(platform: str, cfg) -> str:
         ),
         # Switch into runroot so tau_regression.py receives the right run_prefix
         f"cd {runroot}",
+        # Export TAU_PROFILE_CHECKS when requested; tau_regression.py reads this.
+        *((["export TAU_PROFILE_CHECKS=1"] if profile_checks else [])),
         f"time python3 {dest}/scripts/tau_regression.py {platform} {runroot}",
     ]
     return " && ".join(steps)
 
 
-def _run_platform(platform: str, cfg, html_path: pathlib.Path) -> int:
+def _run_platform(platform: str, cfg, html_path: pathlib.Path, profile_checks: bool = False) -> int:
     """SSH into cfg.url and run tau_regression.py, capturing all output to html_path."""
-    inner = _build_remote_cmd(platform, cfg)
+    inner = _build_remote_cmd(platform, cfg, profile_checks=profile_checks)
     cmd   = [
         "ssh",
         "-o", "BatchMode=yes",
@@ -482,7 +484,7 @@ def _run_platform(platform: str, cfg, html_path: pathlib.Path) -> int:
     return result.returncode
 
 
-def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False) -> None:
+def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False, profile_checks: bool = False) -> None:
     """Launch all platforms in parallel; collect exit codes when done."""
     n = 1 if serial else (len(active_cfgs) or 1)
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
@@ -492,6 +494,7 @@ def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False
                 cfg.name,
                 cfg,
                 date_dir / f"{cfg.name}.html",
+                profile_checks,
             ): cfg.name
             for cfg in active_cfgs
         }
@@ -638,6 +641,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run platform tests one at a time instead of in parallel",
     )
+    parser.add_argument(
+        "--profile-checks",
+        action="store_true",
+        help=(
+            "Enable profile value checking on each remote worker: "
+            "cross-run baseline comparison, cross-builder comparison, and "
+            "structural invariant checks.  Off by default; enable when "
+            "baselines are established and results are expected to be stable."
+        ),
+    )
     args = parser.parse_args()
     if args.configs:
         unknown = [n for n in args.configs if n not in configs.configurations]
@@ -740,7 +753,8 @@ def main() -> int:
 
             t0 = time.monotonic()
             lprint("=== launch_tests ===")
-            launch_tests(active_cfgs, date_dir, serial=args.serial)
+            launch_tests(active_cfgs, date_dir, serial=args.serial,
+                         profile_checks=args.profile_checks)
             tests_elapsed = time.monotonic() - t0
             lprint(f"  done in {tests_elapsed:.0f}s")
 

@@ -11,6 +11,7 @@ vtf = "vtf"
 scorep = "scorep"
 openmp = "openmp"
 rocm = "rocm"
+python = "python"
 
 
 def setEnviron(variable, value, config, runenv=True):
@@ -172,6 +173,24 @@ CompInstTauBuild = TauBuilder("CompInstTauBuild")
 CompInstTauBuild.tauOptions.append("-optCompInst")
 CompInstTauBuild.tauOptions.append("-optShared")
 CompInstTauBuild.isShared = True
+
+# LLVM plugin-based instrumentation.  Only usable on machines where LLVM is
+# available.  Add to test.tauBuilders when config.llvm != "".
+# TODO: verify the exact TAU_OPTIONS flag for LLVM plugin instrumentation.
+LLVMTauBuild = TauBuilder("LLVMTauBuild")
+LLVMTauBuild.tauOptions.append("-optPlugin")  # TODO: confirm flag
+LLVMTauBuild.tauOptions.append("-optShared")
+LLVMTauBuild.isShared = True
+
+# SALT (Source-to-source Annotation and Loop Transformation) instrumentation.
+# Fully implemented in TAU but requires LLVM.  Add to test.tauBuilders when
+# config.llvm != "".
+# TODO: verify the exact TAU_OPTIONS flag for SALT instrumentation.
+SALTTauBuild = TauBuilder("SALTTauBuild")
+SALTTauBuild.tauOptions.append("-optSALT")  # TODO: confirm flag
+SALTTauBuild.tauOptions.append("-optShared")
+SALTTauBuild.isShared = True
+
 #SharedTauBuild = TauBuilder("SharedTauBuild")
 # SharedTauBuild.tauOptions.append("-optShared")
 #SharedTauBuild.isShared = True
@@ -293,6 +312,29 @@ gompWrapper = TestApp("gomp_wrapper", "./matmult")
 gompWrapper.useMPI = False
 gompWrapper.useTauComp = True
 
+# Python instrumentation tests.  No compilation step is needed; the TAU
+# Python module is loaded at runtime via tau_python or the pytau import.
+pythonAutoTest = TestApp("python", "python3", tauExample=True)
+pythonAutoTest.arguments = "auto.py"
+pythonAutoTest.buildCommand = "true"  # no compilation
+pythonAutoTest.useTauComp = False
+pythonAutoTest.tauBuilders = [DefaultTauBuild]
+pythonAutoTest.tauExec = [noExec]
+
+pythonManualTest = TestApp("python", "python3", tauExample=True)
+pythonManualTest.arguments = "manual.py"
+pythonManualTest.buildCommand = "true"  # no compilation
+pythonManualTest.useTauComp = False
+pythonManualTest.tauBuilders = [DefaultTauBuild]
+pythonManualTest.tauExec = [noExec]
+
+pythonTauPythonTest = TestApp("python", "tau_python", tauExample=True)
+pythonTauPythonTest.arguments = "-T serial,python firstprime.py"
+pythonTauPythonTest.buildCommand = "true"  # no compilation
+pythonTauPythonTest.useTauComp = False
+pythonTauPythonTest.tauBuilders = [DefaultTauBuild]
+pythonTauPythonTest.tauExec = [noExec]
+
 ompCxx = TestApp("openmp/multitask_openmp", "./multitask_openmp", tauExample=True)
 ompCxx.useMPI = False
 ompCxx.useTauComp = True
@@ -374,11 +416,15 @@ PhaseConf = TAUConfiguration([phase], "SERIAL,PHASE", [phaseTestCpp])
 PThreadConf = TAUConfiguration([pthread], "SERIAL,PTHREAD", [
                                pthreadTestCpp, matmultF90Serial])
 
+PythonConf = TAUConfiguration([python], "SERIAL,PYTHON",
+                              [pythonAutoTest, pythonManualTest, pythonTauPythonTest])
+
 #ScorepConf = TAUConfiguration([scorep], "SCOREP,SERIAL", [minimalHello])
 
 
 
-def build_app_list(useOpenMPOMPT=True, cuda="", rocm="", level_zero="", minimal=False):
+def build_app_list(useOpenMPOMPT=True, cuda="", rocm="", level_zero="",
+                   minimal=False, python=""):
     apps = [SerConf, PhaseConf, PThreadConf, OpariConf, MPIConf, OpariMPIConf]
     if useOpenMPOMPT:
         apps += [OpenMPConf, OpenMPMPIConf]
@@ -388,6 +434,8 @@ def build_app_list(useOpenMPOMPT=True, cuda="", rocm="", level_zero="", minimal=
         apps.append(RocmConf)
     if level_zero:
         apps.append(oneAPIConf)
+    if python:
+        apps.append(PythonConf)
     if minimal:
         apps = [SerConf]
     return apps
