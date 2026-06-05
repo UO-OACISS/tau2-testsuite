@@ -227,6 +227,124 @@ def prependPath(directory, config):
     config.envVarsExport.add("PATH")
     os.environ['PATH'] = directory + os.pathsep + os.environ['PATH']
 
+
+def _get_tau_makefile_path():
+    """Return the active TAU_MAKEFILE path when it is set and readable."""
+    tau_makefile = os.environ.get(TAUMAKE, "")
+    if tau_makefile == "":
+        warning("Cannot resolve TAU makefile value: TAU_MAKEFILE is unset")
+        return ""
+    if not os.path.isfile(tau_makefile):
+        warning("Cannot resolve TAU makefile value: missing TAU_MAKEFILE " + tau_makefile)
+        return ""
+    return tau_makefile
+
+
+def _strip_makefile_inline_comment(text):
+    """Strip inline comments from a makefile assignment value."""
+    return re.sub(r'(?<!\\)#.*$', '', text).strip()
+
+
+def _read_tau_makefile_value(var_name, tau_makefile):
+    """Return the final assigned value for var_name from TAU_MAKEFILE.
+
+    Supports '=', ':=', '?=' and '+=' operators and strips trailing comments
+    like '#ENDIF##PROFILE#' from assignment values.
+    """
+    assign_re = re.compile(r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*([:+?]?=)\s*(.*?)\s*$')
+    values = {}
+    try:
+        with open(tau_makefile, "r") as mf:
+            for raw in mf:
+                line = raw.rstrip('\n')
+                if line.lstrip().startswith('#'):
+                    continue
+                m = assign_re.match(line)
+                if not m:
+                    continue
+                name, op, rhs = m.group(1), m.group(2), _strip_makefile_inline_comment(m.group(3))
+                if op == '+=':
+                    old = values.get(name, "")
+                    values[name] = (old + " " + rhs).strip() if old else rhs
+                elif op == '?=':
+                    if name not in values or values[name] == "":
+                        values[name] = rhs
+                else:
+                    values[name] = rhs
+    except Exception:
+        return ""
+    return values.get(var_name, "")
+
+
+def _resolve_tau_python_bindings_dir():
+    """Resolve <lib>/bindings-$TAU_CONFIG from the active TAU_MAKEFILE."""
+    tau_makefile = _get_tau_makefile_path()
+    if tau_makefile == "":
+        return ""
+
+    tau_config = _read_tau_makefile_value("TAU_CONFIG", tau_makefile)
+    if tau_config == "":
+        makefile_name = os.path.basename(tau_makefile)
+        if makefile_name.startswith("Makefile.tau-"):
+            tau_config = makefile_name[len("Makefile.tau-"):]
+
+    if tau_config == "":
+        warning("Cannot resolve TAU Python bindings: TAU_CONFIG not found in " + tau_makefile)
+        return ""
+
+    bindings_dir = os.path.join(os.path.dirname(tau_makefile), "bindings" + tau_config)
+    if not os.path.isdir(bindings_dir):
+        warning("Resolved TAU Python bindings directory does not exist: " + bindings_dir)
+    return bindings_dir
+
+
+def _resolve_dynamic_test_env_value(raw_val, tau_makefile):
+    """Resolve special environment tokens used in TestApp.testEnv values.
+
+    Supported formats:
+      @@TAU_MAKEFILE:BINDINGS_DIR@@ -> <lib>/bindings-$TAU_CONFIG
+      @@TAU_MAKEFILE:VARNAME@@      -> value of VARNAME in TAU_MAKEFILE
+    """
+    if raw_val.startswith(TAU_DYNAMIC_TOK_PREFIX) and raw_val.endswith(TAU_DYNAMIC_TOK_SUFFIX):
+        var_name = raw_val[len(TAU_DYNAMIC_TOK_PREFIX):-len(TAU_DYNAMIC_TOK_SUFFIX)].strip()
+        if var_name == "":
+            warning("Ignoring empty TAU makefile token in testEnv")
+            return ""
+        if var_name == "BINDINGS_DIR":
+            return _resolve_tau_python_bindings_dir()
+        resolved = _read_tau_makefile_value(var_name, tau_makefile)
+        if resolved == "":
+            warning("TAU makefile variable not found or empty: " + var_name)
+        return resolved
+
+    return raw_val
+
+
+def resolveTestEnvironment(tauTest):
+    """Return test-specific environment vars resolved for the current run context."""
+    env_map = getattr(tauTest, "testEnv", {})
+    if not env_map:
+        return {}
+    if not isinstance(env_map, dict):
+        warning("Ignoring non-dict testEnv for test " + tauTest.buildDir)
+        return {}
+
+    tau_makefile = _get_tau_makefile_path()
+    if tau_makefile == "":
+        return {}
+
+    resolved = {}
+    for var, val in env_map.items():
+        resolved_val = _resolve_dynamic_test_env_value(str(val), tau_makefile)
+        if resolved_val == "":
+            continue
+        if var == "PYTHONPATH":
+            existing = os.environ.get(var, "")
+            resolved[var] = resolved_val + (os.pathsep + existing if existing else "")
+        else:
+            resolved[var] = resolved_val
+    return resolved
+
 def buildTAU(config, options):
     output("Building TAU with " + options)
     cdres=chdir(TAU_ROOT)
@@ -1340,6 +1458,9 @@ def RunAllTests(config, buildApps):
                                 #outputHeader("Running " + tauTest.buildDir + " with " + testName)
                                 outputHeader("Running " + tauTest.buildDir + "(" + tauTestBuild.name + ") with:" + envSet.name + ", " + tauExec.name + ", " + tauBuild.execArgs)
                                 envSet.setTauRunEnvironment(config, resolvedEnv)
+                                resolvedTestEnv = resolveTestEnvironment(tauTest)
+                                for var, val in resolvedTestEnv.items():
+                                    setEnviron(var, val, config)
                                 FullClean()
                                 #runs=10
                                 test_start_time = datetime.datetime.now().timestamp()
@@ -1369,6 +1490,8 @@ def RunAllTests(config, buildApps):
                                     SaveCores(tauTest.binName, tauTest.buildDir + "_" +
                                               tauTestBuild.name + "_" + tauExec.name + "_" + envSet.name,
                                               test_start_time)
+                                for var in resolvedTestEnv:
+                                    unsetEnviron(var, config)
                                 envSet.unsetTauRunEnvironment(config, resolvedEnv)
 
                     else:

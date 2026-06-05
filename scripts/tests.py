@@ -12,6 +12,9 @@ scorep = "scorep"
 openmp = "openmp"
 rocm = "rocm"
 python = "python"
+TAU_DYNAMIC_TOK_PREFIX = "@@TAU_MAKEFILE:"
+TAU_DYNAMIC_TOK_SUFFIX = "@@"
+TAU_PYTHON_BINDINGS_DIR = TAU_DYNAMIC_TOK_PREFIX + "BINDINGS_DIR" + TAU_DYNAMIC_TOK_SUFFIX
 
 
 def setEnviron(variable, value, config, runenv=True):
@@ -247,7 +250,7 @@ class TestApp:
         self.tauExec = [noExec, ioMemExec, ebsExec, ioMemEbsExec]  # ,ioMemExec ioMemEbsExec
 
         self.tauEnv = [defaultEnv, mergedEnv, otf2Env, perfettoEnv]  # compEnv, ,callEnv,papiEnv
-        self.env = []
+        self.testEnv = {}
         self.useMPI = False
         self.useTauComp = False
 
@@ -320,6 +323,7 @@ pythonAutoTest.buildCommand = "true"  # no compilation
 pythonAutoTest.useTauComp = False
 pythonAutoTest.tauBuilders = [DefaultTauBuild]
 pythonAutoTest.tauExec = [noExec]
+pythonAutoTest.testEnv = {"PYTHONPATH": TAU_PYTHON_BINDINGS_DIR}
 
 pythonManualTest = TestApp("python", "python3", tauExample=True)
 pythonManualTest.arguments = "manual.py"
@@ -327,6 +331,7 @@ pythonManualTest.buildCommand = "true"  # no compilation
 pythonManualTest.useTauComp = False
 pythonManualTest.tauBuilders = [DefaultTauBuild]
 pythonManualTest.tauExec = [noExec]
+pythonManualTest.testEnv = {"PYTHONPATH": TAU_PYTHON_BINDINGS_DIR}
 
 pythonTauPythonTest = TestApp("python", "tau_python", tauExample=True)
 pythonTauPythonTest.arguments = "-T serial,python firstprime.py"
