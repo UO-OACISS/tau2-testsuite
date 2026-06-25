@@ -253,6 +253,9 @@ class TestApp:
         self.testEnv = {}
         self.useMPI = False
         self.useTauComp = False
+        # Dict of config attribute name -> required value. Tests are skipped
+        # when any requirement does not match the active Configuration.
+        self.configRequirements = {}
 
 class OutputTester:
     def __init__(self, testCommands):
@@ -324,6 +327,7 @@ pythonAutoTest.useTauComp = False
 pythonAutoTest.tauBuilders = [DefaultTauBuild]
 pythonAutoTest.tauExec = [noExec]
 pythonAutoTest.testEnv = {"PYTHONPATH": TAU_PYTHON_BINDINGS_DIR}
+pythonAutoTest.configRequirements = {"use_libpython": True}
 
 pythonManualTest = TestApp("python", "python3", tauExample=True)
 pythonManualTest.arguments = "manual.py"
@@ -332,6 +336,7 @@ pythonManualTest.useTauComp = False
 pythonManualTest.tauBuilders = [DefaultTauBuild]
 pythonManualTest.tauExec = [noExec]
 pythonManualTest.testEnv = {"PYTHONPATH": TAU_PYTHON_BINDINGS_DIR}
+pythonManualTest.configRequirements = {"use_libpython": True}
 
 pythonTauPythonTest = TestApp("python", "tau_python", tauExample=True)
 pythonTauPythonTest.arguments = "-T serial,python firstprime.py"

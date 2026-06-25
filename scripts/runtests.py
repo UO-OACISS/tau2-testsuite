@@ -203,6 +203,19 @@ def update_source() -> bool:
                 f"Source may be stale — aborting to avoid running outdated tests."
             )
             return False
+
+        # === Automatically update any submodules if they exist ===
+        print(f"  Syncing submodules for {name} …", flush=True)
+        r = subprocess.run(["git", "-C", str(path), "submodule", "update", "--init"])
+        if r.returncode != 0:
+            log_error(
+                f"FATAL: git submodule update failed for {name}. "
+                f"Aborting — no tests were run."
+            )
+            return False
+
+
+
     return True
 
 
@@ -418,7 +431,8 @@ def local_copy(active_cfgs: list) -> None:
 
 # ── Per-platform remote SSH command ────────────────────────────────────────────
 
-def _build_remote_cmd(platform: str, cfg, profile_checks: bool = False) -> str:
+def _build_remote_cmd(platform: str, cfg, profile_checks: bool = False,
+                      tests: list[str] | None = None) -> str:
     """
     Build the shell command string executed remotely via:
         ssh <url> bash -l -c '<cmd>'
@@ -427,6 +441,8 @@ def _build_remote_cmd(platform: str, cfg, profile_checks: bool = False) -> str:
     """
     runroot = cfg.runroot
     dest    = configs.test_root(runroot, platform)
+
+    tests_arg = (" --tests " + " ".join(shlex.quote(t) for t in tests)) if tests else ""
 
     steps = [
         # Try module-load Python; tolerate failure (spack / system Python also work)
@@ -458,14 +474,16 @@ def _build_remote_cmd(platform: str, cfg, profile_checks: bool = False) -> str:
         f"cd {runroot}",
         # Export TAU_PROFILE_CHECKS when requested; tau_regression.py reads this.
         *((["export TAU_PROFILE_CHECKS=1"] if profile_checks else [])),
-        f"time python3 {dest}/scripts/tau_regression.py {platform} {runroot}",
+        f"time python3 {dest}/scripts/tau_regression.py {platform} {runroot}{tests_arg}",
     ]
     return " && ".join(steps)
 
 
-def _run_platform(platform: str, cfg, html_path: pathlib.Path, profile_checks: bool = False) -> int:
+def _run_platform(platform: str, cfg, html_path: pathlib.Path,
+                  profile_checks: bool = False,
+                  tests: list[str] | None = None) -> int:
     """SSH into cfg.url and run tau_regression.py, capturing all output to html_path."""
-    inner = _build_remote_cmd(platform, cfg, profile_checks=profile_checks)
+    inner = _build_remote_cmd(platform, cfg, profile_checks=profile_checks, tests=tests)
     cmd   = [
         "ssh",
         "-o", "BatchMode=yes",
@@ -484,7 +502,9 @@ def _run_platform(platform: str, cfg, html_path: pathlib.Path, profile_checks: b
     return result.returncode
 
 
-def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False, profile_checks: bool = False) -> None:
+def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False,
+                 profile_checks: bool = False,
+                 tests: list[str] | None = None) -> None:
     """Launch all platforms in parallel; collect exit codes when done."""
     n = 1 if serial else (len(active_cfgs) or 1)
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
@@ -495,6 +515,7 @@ def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False
                 cfg,
                 date_dir / f"{cfg.name}.html",
                 profile_checks,
+                tests,
             ): cfg.name
             for cfg in active_cfgs
         }
@@ -651,6 +672,17 @@ def parse_args() -> argparse.Namespace:
             "baselines are established and results are expected to be stable."
         ),
     )
+    parser.add_argument(
+        "--tests",
+        nargs="+",
+        metavar="DIR",
+        help=(
+            "Restrict each remote worker to tests whose buildDir matches one "
+            "of these names (e.g. 'python', 'mm', 'instrument_clean'). "
+            "TAU configurations with no matching tests are skipped, so only "
+            "the necessary TAU builds are performed."
+        ),
+    )
     args = parser.parse_args()
     if args.configs:
         unknown = [n for n in args.configs if n not in configs.configurations]
@@ -754,7 +786,8 @@ def main() -> int:
             t0 = time.monotonic()
             lprint("=== launch_tests ===")
             launch_tests(active_cfgs, date_dir, serial=args.serial,
-                         profile_checks=args.profile_checks)
+                         profile_checks=args.profile_checks,
+                         tests=args.tests)
             tests_elapsed = time.monotonic() - t0
             lprint(f"  done in {tests_elapsed:.0f}s")
 

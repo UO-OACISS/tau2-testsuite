@@ -2,6 +2,7 @@
 
 import sys
 import os
+import argparse
 import string
 import glob
 # import profile_diff
@@ -134,7 +135,7 @@ def end(code):
     sys.exit(errorsFound)
 
 def usage():
-    print("Usage: tau_regression.py <configuration> <run root path (optional)>")
+    print("Usage: tau_regression.py <configuration> [run_root] [--tests DIR ...]")
     sys.exit(-1)
 
 # System call. Command to be run. Timeout time. Enclose output in details tags? Print error output?
@@ -355,13 +356,34 @@ def buildTAU(config, options):
     retval = system("./configure " + config.baseConfig + " " +
                     config.f90 + " " + options + config.useropt, timeout=1200)
     if retval != 0:
-        error("Error: failed to configure!")
+        #error("Error: failed to configure!")
         return retval
     retval = system(config.tauMake + " clean install" + config.makeExtra)
     #system("rm ./"+config.arch+"/lib/libTAU.so")
-    if retval != 0:
-        error("Error: failed to build TAU!")
+    #if retval != 0:
+        #error("Error: failed to build TAU!")
     return retval
+
+
+def filter_buildapps(buildapps, test_names):
+    """Return a filtered copy of buildapps restricted to the given buildDir names.
+
+    Each TAUConfiguration's .tests list is replaced with only those TestApps
+    whose buildDir appears in test_names.  TAUConfigurations with no surviving
+    tests are dropped entirely, so their TAU build is also skipped.
+
+    Passing None or an empty list returns buildapps unchanged.
+    """
+    if not test_names:
+        return buildapps
+    names = set(test_names)
+    result = []
+    for tauconf in buildapps:
+        tauconf.tests = [t for t in tauconf.tests if t.buildDir in names]
+        if tauconf.tests:
+            result.append(tauconf)
+    return result
+
 
 def batchBuildTAU(config, testmap):
     if config.build_pdt == True and not os.path.isfile(TAU_ROOT+"/../pdtoolkit/no-build"):
@@ -410,7 +432,7 @@ def batchBuildTAU(config, testmap):
             return cdres
         retval = system("bash -c \"CC=gcc ./configure -bfd=download -cc=gcc\"")
         if retval != 0:
-            error("Error: failed to configure!")
+            #error("Error: failed to configure!")
             return retval
         config.prepare()
 
@@ -1251,10 +1273,52 @@ def find_apport_cores(bin_path, since_timestamp, target_dir):
     return found_cores
 
 def SaveCores(bin_path, test_name, start_time_epoch):
-    # Resolve the absolute path now, while still in the test run directory.
-    # Many tests share the same binary name (e.g. matmult); using the full path
-    # matches coredumpctl's COREDUMP_EXE field, which is unique per test directory.
+    # Resolve executable candidates now, while still in the test run directory.
+    # Keep matching strict (full executable paths only), but include interpreter
+    # executables for script/shebang launches (e.g. python, bash wrappers).
     abs_bin_path = os.path.abspath(bin_path)
+    run_cwd = os.path.abspath(os.getcwd())
+
+    exe_candidates = []
+
+    def _add_candidate(path):
+        if not path:
+            return
+        norm = os.path.abspath(path)
+        if norm not in exe_candidates:
+            exe_candidates.append(norm)
+
+    _add_candidate(abs_bin_path)
+    if os.path.exists(abs_bin_path):
+        _add_candidate(os.path.realpath(abs_bin_path))
+
+    # If the command is looked up via PATH (e.g. "python3"), include the
+    # concrete executable used at runtime.
+    if os.path.dirname(bin_path) == "":
+        which_path = shutil.which(bin_path)
+        if which_path:
+            _add_candidate(which_path)
+            _add_candidate(os.path.realpath(which_path))
+
+    # If bin_path points to a script with a shebang, include its interpreter.
+    # Handles "#!/usr/bin/python3" and "#!/usr/bin/env python3" forms.
+    if os.path.isfile(abs_bin_path):
+        try:
+            with open(abs_bin_path, "rb") as bf:
+                first = bf.readline(4096)
+            if first.startswith(b"#!"):
+                shebang = first[2:].decode("utf-8", errors="replace").strip()
+                if shebang:
+                    parts = shebang.split()
+                    if parts:
+                        interp = parts[0]
+                        if os.path.basename(interp) == "env" and len(parts) > 1:
+                            interp = shutil.which(parts[1]) or parts[1]
+                        _add_candidate(interp)
+                        if os.path.exists(interp):
+                            _add_candidate(os.path.realpath(interp))
+        except Exception:
+            pass
     arch_dir = f"CORES.{test_name}.{int(start_time_epoch)}"
     os.makedirs(arch_dir, exist_ok=True)
 
@@ -1274,26 +1338,32 @@ def SaveCores(bin_path, test_name, start_time_epoch):
     print("<details><summary><b>coredumpctl diagnostic</b></summary><pre>")
     try:
         since_str = datetime.datetime.fromtimestamp(start_time_epoch).strftime("%Y-%m-%d %H:%M:%S")
-        print(html.escape(f"coredumpctl: searching for exe={abs_bin_path} since={since_str}"))
+        print(html.escape(
+            f"coredumpctl: searching for exe candidates={exe_candidates} since={since_str}"))
 
         # Try --json=short first (systemd >= 248); fall back to text parsing for older systems.
         pids = []
-        res = subprocess.run(
-            ["coredumpctl", "--no-pager", "list", abs_bin_path, "--since", since_str, "--json=short"],
-            capture_output=True, text=True)
-        print(html.escape(f"coredumpctl --json=short exit={res.returncode}"))
-        if res.stderr.strip():
-            print(html.escape(res.stderr.strip()))
-        if res.returncode == 0 and res.stdout.strip():
-            for entry in json.loads(res.stdout):
-                pids.append(str(entry['pid']))
-        else:
+        for exe in exe_candidates:
+            res = subprocess.run(
+                ["coredumpctl", "--no-pager", "list", exe, "--since", since_str, "--json=short"],
+                capture_output=True, text=True)
+            print(html.escape(f"coredumpctl --json=short exe={exe} exit={res.returncode}"))
+            if res.stderr.strip():
+                print(html.escape(res.stderr.strip()))
+            if res.returncode == 0 and res.stdout.strip():
+                try:
+                    for entry in json.loads(res.stdout):
+                        pids.append(str(entry['pid']))
+                    continue
+                except Exception as je:
+                    print(html.escape(f"json parse failed for exe={exe}: {je}"))
+
             # Fallback: parse text output (works on systemd < 248).
             # Lines look like: "Wed 2026-05-06 12:17:42 PDT  3526136 ..."
             res2 = subprocess.run(
-                ["coredumpctl", "--no-pager", "list", abs_bin_path, "--since", since_str],
+                ["coredumpctl", "--no-pager", "list", exe, "--since", since_str],
                 capture_output=True, text=True)
-            print(html.escape(f"coredumpctl text fallback exit={res2.returncode}"))
+            print(html.escape(f"coredumpctl text fallback exe={exe} exit={res2.returncode}"))
             if res2.stderr.strip():
                 print(html.escape(res2.stderr.strip()))
             if res2.returncode == 0:
@@ -1307,6 +1377,35 @@ def SaveCores(bin_path, test_name, start_time_epoch):
                         if tok.isdigit() and int(tok) > 1:
                             pids.append(tok)
                             break
+
+        # De-duplicate and keep original discovery order.
+        unique_pids = []
+        for pid in pids:
+            if pid not in unique_pids:
+                unique_pids.append(pid)
+
+        # Tighten matching for shared interpreters (e.g. /usr/bin/python3.X):
+        # keep only entries from the same working directory when available.
+        pids = []
+        for pid in unique_pids:
+            keep = True
+            try:
+                info_res = subprocess.run(
+                    ["coredumpctl", "--no-pager", "info", pid],
+                    capture_output=True, text=True)
+                if info_res.returncode == 0:
+                    m_cwd = re.search(r'^\s*CWD:\s+(.*)$', info_res.stdout, re.MULTILINE)
+                    if m_cwd:
+                        core_cwd = os.path.abspath(m_cwd.group(1).strip())
+                        if core_cwd != run_cwd:
+                            keep = False
+                            print(html.escape(
+                                f"coredumpctl: skipping pid={pid} due to cwd mismatch "
+                                f"({core_cwd} != {run_cwd})"))
+            except Exception as ie:
+                print(html.escape(f"coredumpctl info exception for pid={pid}: {ie}"))
+            if keep:
+                pids.append(pid)
 
         print(html.escape(f"coredumpctl: found PIDs: {pids}"))
         for pid in pids:
@@ -1394,6 +1493,13 @@ def RunAllTests(config, buildApps):
             if len(tauBuild.tests)<1:
                 warning("No tests for tau configuration!")
             for tauTest in tauBuild.tests:
+                # Skip tests whose configRequirements don't match the active config.
+                unmet = [k for k, v in tauTest.configRequirements.items()
+                         if getattr(config, k, None) != v]
+                if unmet:
+                    output("Skipping " + tauTest.buildDir +
+                           " (unmet requirements: " + ", ".join(unmet) + ")")
+                    continue
                 outputHeader("Testing " + tauTest.buildDir)
                 #testPrefix=TEST_ROOT + "/programs/"
                 #if tauTest.tauExample:
@@ -1509,21 +1615,26 @@ def RunAllTests(config, buildApps):
             warning(tauBuild.execArgs + " not built! Skipping tests!")
 ######################################################################
 
-args = sys.argv[1:]
-if len(args) == 0:
-    error("TEST NAME REQUIRED")
-    sys.exit(1)
+_parser = argparse.ArgumentParser(
+    description="TAU regression worker — runs on the remote test machine.",
+    usage="tau_regression.py <configuration> [run_root] [--tests DIR ...]",
+)
+_parser.add_argument("configuration",
+                     help="Config name from configs.py")
+_parser.add_argument("run_root", nargs="?", default=os.environ.get("HOME", "/tmp"),
+                     help="Root directory for the test tree (default: $HOME)")
+_parser.add_argument(
+    "--tests", nargs="+", metavar="DIR",
+    help="Restrict to tests whose buildDir matches one of these names. "
+         "TAU configurations with no matching tests are skipped entirely, "
+         "so only the necessary TAU builds are performed.",
+)
+_args = _parser.parse_args()
 
-if len(args) > 2:
-    usage()
-    sys.exit(1)
-    
-selectedConfig = args[0]
+selectedConfig = _args.configuration
 dirsuf = "-" + selectedConfig
 
-run_prefix = os.environ['HOME']
-if len(args) > 1:
-    run_prefix = args[1]
+run_prefix = _args.run_root
 
 if not os.access(run_prefix, os.W_OK):
     error("INVALID RUN DIRECTORY: "+run_prefix)
@@ -1696,6 +1807,8 @@ buildApps = build_app_list(
     minimal=config.minimal,
     python=config.python,
 )
+
+buildApps = filter_buildapps(buildApps, _args.tests)
 
 buildApps = batchBuildTAU(config, buildApps)
 

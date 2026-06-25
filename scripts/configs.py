@@ -84,6 +84,7 @@ class Configuration:
         self.url = ""
         self.remoteHome = ""  # set in scripts/local_settings.py
         self.python = "-python -pthread"
+        self.use_libpython = False
         configurations[self.name]=self
 
     def prepare(self):
@@ -266,6 +267,7 @@ yu.papi = "-papi=/home/wspear/bin/papi-git"
 yu.makeExtra = " -j "
 yu.url = "yu"
 yu.remoteHome = "/home/wspear"
+yu.use_libpython = True
 
 miniyu = Configuration("miniyu", "x86_64")
 miniyu.baseConfig = ""
@@ -390,6 +392,7 @@ tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g3\ -Og"
 tmpconfig.modules=[ "openmpi", "cuda/12.5" ]
 tmpconfig.url = "hopper1.nic.uoregon.edu"
+tmpconfig.use_libpython = True
 
 
 tmpconfig = gilgamesh_nvhpc = ModuleConfiguration("gilgamesh_nvhpc", "craycnl")
@@ -411,6 +414,7 @@ tmpconfig.cleanBFD=True
 tmpconfig.envVars={'EXTRA_FFLAGS':'-noswitcherror'}
 tmpconfig.url = "gilgamesh.nic.uoregon.edu"
 tmpconfig.runroot = "/home/users/wspear/regression"
+tmpconfig.use_libpython = True
 
 tmpconfig = gary = ModuleConfiguration("gary", "craycnl")
 tmpconfig.baseConfig = "-c++=CC -cc=cc"  #-c++=nvc++ -cc=nvc -pdt_c++=g++"
