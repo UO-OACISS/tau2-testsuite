@@ -80,7 +80,7 @@ class Configuration:
         self.level_zero=""
         self.opencl=""
         self.spack = []
-        self.envVars = {}
+        self.envVars = {'TAU_TRACK_SIGNALS':'1'}
         self.url = ""
         self.remoteHome = ""  # set in scripts/local_settings.py
         self.python = "-python -pthread"
@@ -316,7 +316,7 @@ tmpconfig.url = "instinct.nic.uoregon.edu"
 tmpconfig = omnia_rocm = ModuleConfiguration("omnia_rocm", "x86_64")
 tmpconfig.baseConfig = "-c++=amdclang++ -cc=amdclang"
 tmpconfig.f90 = "-fortran=amdflang"
-tmpconfig.envVars = {'LEGACY_FFLAGS': ''}  # amdflang rejects -std=legacy
+tmpconfig.envVars |= {'LEGACY_FFLAGS': ''}  # amdflang rejects -std=legacy
 tmpconfig.pdt_config = " -GNU "
 #tmpconfig.papi = "-papi=/packages/papi/6.0.0.1" # /packages/papi/6.0.0.1"
 tmpconfig.libunwind = "-unwind=download"
@@ -411,7 +411,7 @@ tmpconfig.mpi = "-mpi"
 tmpconfig.modules=[ "craype-x86-rome", "PrgEnv-nvidia", "gcc/12.2.0" ] #, "nvhpc/23.5" ]
 # No spack mpich: use Cray PE MPI (cray-mpich) so mpicc/mpicxx wrap nvc/nvc++
 tmpconfig.cleanBFD=True
-tmpconfig.envVars={'EXTRA_FFLAGS':'-noswitcherror'}
+tmpconfig.envVars |= {'EXTRA_FFLAGS':'-noswitcherror'}
 tmpconfig.url = "gilgamesh.nic.uoregon.edu"
 tmpconfig.runroot = "/home/users/wspear/regression"
 tmpconfig.use_libpython = True
@@ -427,7 +427,7 @@ tmpconfig.mpiBefore = "srun -p cray  -n 4 " #--mca btl self,tcp  --mca orte_base
 tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g\\ -O2"
 tmpconfig.mpiCommand = "srun"
-tmpconfig.envVars={'DEFAULT_FFLAGS':'-O3', 'LEGACY_FFLAGS':''}  # Cray ftn rejects -std=legacy
+tmpconfig.envVars |= {'DEFAULT_FFLAGS':'-O3', 'LEGACY_FFLAGS':''}  # Cray ftn rejects -std=legacy
 tmpconfig.url = "gary.nic.uoregon.edu"
 tmpconfig.runroot = "/home/users/wspear/regression"
 #tmpconfig.modules=[ "craype-x86-rome", "PrgEnv-nvhpc", "gcc/12.2.0",  "nvhpc/23.5"  ]  #"gcc/12.2"]  #"nvhpc/22.11"]

@@ -180,8 +180,18 @@ def getEnvString(config):
     envString = ''
     if not config.passEnv:
         return envString
+
+    # Keep envVars and envVarsExport distinct:
+    #   - envVars: static per-config defaults
+    #   - envVarsExport: runtime-tracked vars set/unset during test execution
+    # For launcher --env forwarding, include both with runtime values taking precedence.
+    export_map = dict(getattr(config, 'envVars', {}))
     for x in config.envVarsExport:
-        envString += '\'' + x + '=' + os.environ[x] + '\'' + ':'
+        if x in os.environ:
+            export_map[x] = os.environ[x]
+
+    for key, value in export_map.items():
+        envString += '\'' + str(key) + '=' + str(value) + '\'' + ':'
     return envString
 
 def executeSequential(command, config):
@@ -227,6 +237,18 @@ def prependPath(directory, config):
     print("<b><pre>" + os.getcwd() + "> PATH=" + directory + ":$PATH</pre></b>")
     config.envVarsExport.add("PATH")
     os.environ['PATH'] = directory + os.pathsep + os.environ['PATH']
+
+
+def applyConfigEnvironment(config):
+    """Apply static config.envVars once for the full regression run."""
+    env_map = getattr(config, "envVars", {})
+    if not env_map:
+        return
+    print("<details><summary><b>Applying config.envVars</b></summary>")
+    for key, value in env_map.items():
+        # Use setEnviron so values are visible in HTML and tracked for launcher forwarding.
+        setEnviron(str(key), str(value), config)
+    print("</details>")
 
 
 def _get_tau_makefile_path():
@@ -1772,6 +1794,8 @@ if config.path != "":
 system("echo $PYTHONPATH", timeout=0, reportTime=False)
 
 config.prepare()
+
+applyConfigEnvironment(config)
 
 outputHeader("Startup")
 prependPath(TAU_ROOT + "/" + config.arch + "/bin", config)

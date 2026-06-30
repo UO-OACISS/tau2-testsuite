@@ -43,8 +43,6 @@ class TauBuilder:
         #envval = "\"" + envval + "\""
         setEnviron(TAUOPTIONS, envval, config, False)
         setEnviron(TAUMAKE, stub, config, False)
-        for key, value in config.envVars.items():
-            setEnviron(key,value,config,False)
         print("</details>")
 
     def unsetTauOptions(self, config):
@@ -52,8 +50,6 @@ class TauBuilder:
         print( os.getcwd() + " >")
         unsetEnviron(TAUOPTIONS, config)
         unsetEnviron(TAUMAKE, config)
-        for key, value in config.envVars.items():
-            unsetEnviron(key,config)
         print("</details>")
 
 profile = "profile"
