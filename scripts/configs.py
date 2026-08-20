@@ -105,18 +105,18 @@ class ModuleConfiguration(Configuration):
     def prepare(self,):
         import envmod
         for mod in self.modules:
-            loaded = os.environ.get('LOADEDMODULES', '').split(':')
+            #loaded = os.environ.get('LOADEDMODULES', '').split(':')
             action = 'load'
-            for prefix in envmod._EXCLUSIVE_PREFIXES:
-                if mod.startswith(prefix):
-                    conflict = next(
-                        (m for m in loaded
-                         if m == prefix[:-1] or m.startswith(prefix)),
-                        None
-                    )
-                    if conflict and conflict != mod:
-                        action = 'swap ' + conflict
-                        break
+            #for prefix in envmod._EXCLUSIVE_PREFIXES:
+            #    if mod.startswith(prefix):
+            #        conflict = next(
+            #            (m for m in loaded
+            #             if m == prefix[:-1] or m.startswith(prefix)),
+            #            None
+            #        )
+            #        if conflict and conflict != mod:
+            ##            action = 'swap ' + conflict
+            #            break
             print("<b><pre>" + os.getcwd() +
                   "> module " + action + " " + mod + "</pre></b>")
             envmod.smart_load(mod)
@@ -145,6 +145,7 @@ pegasus.mpiAfter = ""
 #pegasus.modules = ["gcc/10.2.0"] #"mpi/openmpi-3.1.1_gcc-7.3",  "papi/5.6.0", "java"]
 pegasus.pdt_config = ""
 pegasus.spack = [ "mpich%gcc" ] #, "python@:2" ]
+#pegasus.modules = [ "mpich/3.2-g" ]
 pegasus.url = "pegasus.nic.uoregon.edu"
 
 
@@ -284,7 +285,7 @@ miniyu.remoteHome = "/home/wspear"
 
 
 
-tmpconfig = instinct = Configuration("instinct", "x86_64")
+tmpconfig = instinct = ModuleConfiguration("instinct", "x86_64")
 tmpconfig.baseConfig = ""
 tmpconfig.f90 = "-fortran=gfortran"
 tmpconfig.pdt_config = " -GNU "
@@ -295,7 +296,7 @@ tmpconfig.mpiBefore = "mpirun -np 4 "
 tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g\\ -O0 "
 #\ -fPIE\ -fPIC
-#tmpconfig.modules=["rocm/5.6.0"]
+tmpconfig.modules=["openmpi/4.1.8_gcc13.2.0", "java"]
 tmpconfig.url = "instinct.nic.uoregon.edu"
 
 
@@ -322,7 +323,7 @@ tmpconfig.pdt_config = " -GNU "
 tmpconfig.libunwind = "-unwind=download"
 #tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
 tmpconfig.rocm = "-roctracer=/opt/rocm-7.1.1 -rocprofiler=/opt/rocm-7.1.1 -rocm"
-tmpconfig.mpiBefore = "mpirun -np 4 "
+tmpconfig.mpiBefore = "mpirun -np 4 -mca prte_forward_signals SIGQUIT,SIGINT,SIGTERM,SIGUSR1,SIGUSR2"
 tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g3\ -Og"
 #tmpconfig.modules=["rocm/7.1.1", "java"] #[ "rocm/5.5.0" , "mpich/031021-llvm12" ] "openmpi/4.1.8_gcc13.2.0", 
@@ -330,9 +331,27 @@ tmpconfig.mpi = "-mpi"
 #tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
 tmpconfig.url = "omnia"
 
+tmpconfig = odyssey_rocm = ModuleConfiguration("odyssey_rocm", "x86_64")
+tmpconfig.baseConfig = "-arch=x86_64 -c++=amdclang++ -cc=amdclang"
+tmpconfig.f90 = "-fortran=amdflang"
+tmpconfig.envVars |= {'LEGACY_FFLAGS': ''}  # amdflang rejects -std=legacy
+tmpconfig.pdt_config = " -GNU "
+#tmpconfig.papi = "-papi=/packages/papi/6.0.0.1" # /packages/papi/6.0.0.1"
+tmpconfig.libunwind = "-unwind=download"
+#tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
+tmpconfig.rocm = "-roctracer=/opt/rocm-7.1.1 -rocprofiler=/opt/rocm-7.1.1 -rocm"
+tmpconfig.mpiBefore = "srun -n 4"
+tmpconfig.mpiCommand = "srun"
+#"mpirun -np 4 -mca prte_forward_signals SIGQUIT,SIGINT,SIGTERM,SIGUSR1,SIGUSR2"
+tmpconfig.mpi = "-mpi"
+tmpconfig.modules=[ "mvapich/4.1-rocm7.1.1" ]
+#tmpconfig.useropt = " -useropt=-g3\ -Og"
+#tmpconfig.modules=["rocm/7.1.1", "java"] #[ "rocm/5.5.0" , "mpich/031021-llvm12" ] "openmpi/4.1.8_gcc13.2.0",
+#tmpconfig.spack = ["openmpi"]
+#tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
+tmpconfig.url = "odyssey"
 
-
-tmpconfig = sever = Configuration("sever", "x86_64")
+tmpconfig = sever = ModuleConfiguration("sever", "x86_64")
 tmpconfig.baseConfig = "-cc=icx -c++=icpx"
 #tmpconfig.f90 = "-fortran=intel"
 tmpconfig.level_zero="-level_zero"
@@ -348,7 +367,7 @@ tmpconfig.spack = ["openjdk"]
 
 
 
-tmpconfig = headroom = Configuration("headroom", "x86_64")
+tmpconfig = headroom = ModuleConfiguration("headroom", "x86_64")
 tmpconfig.baseConfig = "-cc=icx -c++=icpx"
 tmpconfig.f90 = "-fortran=intel"
 tmpconfig.level_zero="-level_zero"
@@ -362,7 +381,8 @@ tmpconfig.mpi = "-mpi"
 tmpconfig.url = "headroom.nic.uoregon.edu"
 
 
-tmpconfig = saturn = Configuration("saturn", "x86_64")
+
+tmpconfig = saturn = ModuleConfiguration("saturn", "x86_64")
 tmpconfig.baseConfig = ""
 tmpconfig.f90 = "-fortran=gfortran"
 tmpconfig.cuda = "-cuda=/packages/cuda/12.5.1"
@@ -378,7 +398,7 @@ tmpconfig.modules=[ "openmpi", "cuda/12.5" ]
 tmpconfig.url = "saturn.nic.uoregon.edu"
 
 
-tmpconfig = hopper1 = Configuration("hopper1", "arm64_linux")
+tmpconfig = hopper1 = ModuleConfiguration("hopper1", "arm64_linux")
 tmpconfig.baseConfig = ""
 tmpconfig.f90 = "-fortran=gfortran"
 tmpconfig.cuda = "-cuda=/packages/cuda/12.5.1"

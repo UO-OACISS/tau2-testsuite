@@ -10,9 +10,9 @@ import os, string, subprocess
 #        os.environ['MODULESHOME'] = '/usr/local/packages/modules/Modules/3.2.3';
 
 
-modScript='/init/python.py'
-if 'LMOD_ROOT' in os.environ:
-        modScript='/init/env_modules_python.py'
+#modScript='/init/python.py'
+#if 'LMOD_ROOT' in os.environ:
+#        modScript='/init/env_modules_python.py'
 
 if 'MODULESHOME' not in os.environ and 'LMOD_ROOT' not in os.environ:
         # Some platforms set MODULESHOME only in interactive shells (.bashrc)
@@ -31,8 +31,12 @@ if 'MODULESHOME' not in os.environ and 'LMOD_ROOT' not in os.environ:
         except Exception:
                 pass
 
+#if 'LMOD_ROOT' in os.environ:
+#        modScript='/init/env_modules_python.py'
 if 'LMOD_ROOT' in os.environ:
-        modScript='/init/env_modules_python.py'
+    modScript = '/init/env_modules_python.py'
+else:
+    modScript = '/init/python.py'
 
 if 'MODULESHOME' in os.environ:
         fullModScript=os.environ['MODULESHOME']+modScript
@@ -56,7 +60,7 @@ else:
 
 
 def modcommand(command, *arguments):
-        module(command, "".join(arguments))
+        module(command, " ".join(arguments))
 
 
 # Module families where only one member may be loaded at a time.
