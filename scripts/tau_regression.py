@@ -18,6 +18,7 @@ from subprocess import check_output
 import subprocess
 import shutil
 import tempfile
+import time
 
 errorsFound = 0
 warningsFound = 0
@@ -64,25 +65,25 @@ def printSysInfo(config):
     output("System Config")
     print(config.description)
     # system("env")
-    system("hostname")
-    system("date")
-    system("uname -a")
-    system("module list 2>&1", reportError=False)
+    system("hostname",reportTime=False)
+    system("date",reportTime=False)
+    system("uname -a",reportTime=False)
+    system("module list 2>&1", reportError=False, reportTime=False)
     _seen_compilers = set()
     for _m in re.finditer(r'(?<![a-zA-Z0-9_])-(?:c\+\+|cc)=(\S+)', config.baseConfig):
         _cc = _m.group(1)
         if _cc not in _seen_compilers:
             _seen_compilers.add(_cc)
-            system("which " + _cc, reportError=False)
-            system(_cc + " --version", reportError=False)
+            system("which " + _cc, reportError=False,reportTime=False)
+            system(_cc + " --version", reportError=False,reportTime=False)
     _f90m = re.search(r'-fortran=(\S+)', config.f90)
     if _f90m:
         _fc = _f90m.group(1)
         if _fc not in _seen_compilers:
             _seen_compilers.add(_fc)
-            system("which " + _fc, reportError=False)
-            system(_fc + " --version", reportError=False)
-    system("which java")
+            system("which " + _fc, reportError=False,reportTime=False)
+            system(_fc + " --version", reportError=False,reportTime=False)
+    system("which java",reportTime=False)
     if config.f90 == "-fortran=intel":
         systemq("which ifort ; which ifc; which efc")
         systemq("which icc ; which icpc; which ecc ; which ecpc; which icx; which icpx")
@@ -138,33 +139,155 @@ def usage():
     print("Usage: tau_regression.py <configuration> [run_root] [--tests DIR ...]")
     sys.exit(-1)
 
-# System call. Command to be run. Timeout time. Enclose output in details tags? Print error output?
+import subprocess
+import os
+import sys
+import signal
+import html
+
+def _all_descendant_pids(root_pid):
+    """
+    Walk /proc to find all live descendant PIDs of root_pid, recursively.
+    No external dependencies -- reads /proc/<pid>/stat for each process's
+    PPID and builds the tree in-memory, then does a BFS/DFS from root_pid.
+    """
+    children_of = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return [root_pid]
+
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open(f"/proc/{pid}/stat", "r") as f:
+                stat_line = f.read()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue  # process exited mid-scan, or not ours to read
+
+        try:
+            after_comm = stat_line.rsplit(")", 1)[1]
+            fields = after_comm.split()
+            ppid = int(fields[1])  # state is fields[0], ppid is fields[1]
+        except (IndexError, ValueError):
+            continue
+
+        children_of.setdefault(ppid, []).append(pid)
+
+    result = []
+    frontier = [root_pid]
+    seen = set()
+    while frontier:
+        pid = frontier.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        result.append(pid)
+        frontier.extend(children_of.get(pid, []))
+
+    return result
+
+def _proc_state(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            data = f.read()
+        return data.rsplit(')', 1)[-1].split()[0]
+    except Exception:
+        return None
+
 def system(command, timeout=720, details=True, reportError=True, reportTime=True):
     detStart = ""
     detMid = ""
     detEnd = ""
-    timeoutStart = ""
     timeCmd = ""
-    if(details):
+    
+    if details:
         detStart = "<details><summary>"
         detMid = "</summary>"
         detEnd = "</details>"
-    if(timeout > 0):
-        timeoutStart = "timeout -s 3 "+str(timeout)+" "
-    if(reportTime):
+    if reportTime:
         timeCmd = " time "
-    print(detStart+"<b>" + html.escape(os.getcwd() +
-                                      "> " + command) + "</b>"+detMid+"<pre>")
-    #print(timeCmd+timeoutStart+command)								
+        
+    # Inject TAU environmental safeguards if wrappers are present
+    custom_env = os.environ.copy()
+    if any(wrapper in command for wrapper in ["tau_exec", "tau_python"]):
+        custom_env["TAU_TRACK_SIGNALS"] = "1"
+        custom_env["TAU_DUMP_ON_SIGNAL"] = "1"
+        
+    full_command = f"{spackEnv} {timeCmd} {command}"
+    
+    print(detStart + "<b>" + html.escape(os.getcwd() + "> " + command) + "</b>" + detMid + "<pre>")
     sys.stdout.flush()
-    retval = os.system(spackEnv+timeCmd+timeoutStart+command)
-    #retval = os.system(command)
-    print("</pre>"+detEnd)
-    if(reportError):
-        if (retval/256 == 124):
-            error(command + " timed out ("+str(timeout/60)+" minutes)!")
-        elif (retval != 0):
-            error(command + " failed! ("+str(retval)+")")
+    
+    # Launch process in its own session/group to prevent cross-contamination
+    proc = subprocess.Popen(
+        full_command, 
+        shell=True,
+        executable="/bin/bash",
+        stdout=sys.stdout, 
+        stderr=sys.stderr,
+        env=custom_env,
+        start_new_session=True 
+    )
+    
+    try:
+        retval = proc.wait(timeout=timeout if timeout > 0 else None)
+        
+    except subprocess.TimeoutExpired:
+        print(f"\n[TIMEOUT] Command hung after {timeout}s. Gathering descendant tree...")
+        sys.stdout.flush()
+        
+        # 1. Capture the process tree
+        descendant_pids = _all_descendant_pids(proc.pid)
+        
+        # 2. CRITICAL: Reverse the list so we target leaf applications BEFORE parents/launchers
+        descendant_pids.reverse()
+        
+        print(html.escape(f"Sending SIGQUIT to leaf-first tree: {descendant_pids}"))
+        sys.stdout.flush()
+        
+        for pid in descendant_pids:
+            state = _proc_state(pid)
+            print(html.escape(f"pid={pid} state={state} before SIGQUIT"))
+            try:
+                os.kill(pid, signal.SIGQUIT)
+            except ProcessLookupError:
+                pass
+
+        # 3. Give processes time to complete core-dumps or TAU profile flushes
+        grace = 60
+        deadline = time.time() + grace
+        retval = None
+        while time.time() < deadline:
+            try:
+                retval = proc.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if retval is None:
+            print("\n--- Escalating: Hard killing remaining processes ---")
+            sys.stdout.flush()
+            
+            remaining = _all_descendant_pids(proc.pid)
+            remaining.reverse() # Keep it leaf-first even for SIGKILL
+            
+            for pid in remaining:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            retval = 124
+            
+    print("</pre>" + detEnd)
+    
+    if reportError:
+        if retval == 124:
+            error(f"{command} timed out ({timeout/60} minutes)!")
+        elif retval != 0:
+            error(f"{command} failed! ({retval})")
+            
     return retval
 
 # 2 minute system call
@@ -1258,40 +1381,152 @@ def FullClean():
 #        systemq("mv " + path + " " + archdirname)
 #    systemq("cp " + binName + " " + archdirname)
 
-def find_apport_cores(bin_path, since_timestamp, target_dir):
+
+
+def find_apport_cores(bin_path, since_timestamp, target_dir, exe_candidates=None):
     """
-    Scans /var/crash for relevant .crash files, unpacks them, 
-    and moves the 'CoreDump' file to target_dir.
+    Scans for apport-captured crash artifacts and copies matching cores to
+    target_dir. Portable across systems: apport supports (at least) two
+    distinct capture mechanisms depending on version/configuration, and
+    this checks both rather than assuming one.
+
+      Mechanism A - "crash report" workflow (/var/crash/*.crash):
+        Apport writes a bundled report (metadata + gzip'd core) for
+        packaged software; unpackaged binaries are ignored unless
+        ~/.config/apport/settings has [main] unpackaged=true. Requires
+        `apport-unpack` to extract the core. PID isn't in the filename
+        (that numeric field is the UID) -- it's pulled from the
+        unpacked ProcStatus.
+
+      Mechanism B - "raw coredump" workflow (/var/lib/apport/coredump/):
+        Some apport versions/configs (seen with dump mode 1) write a
+        plain ELF core directly to this directory, owned by the
+        crashing process's real UID, no unpacking required. PID is
+        the second-to-last dot-separated field in the filename.
+
+    Both are checked unconditionally; neither directory existing (or
+    being empty) is treated as a normal "not this mechanism" case, not
+    an error.
     """
-    # 1. Translate /abs/path/to/bin to _abs_path_to_bin (apport uses absolute paths)
-    abs_bin_path = os.path.abspath(bin_path)
-    encoded_path = abs_bin_path.lstrip("/").replace("/", "_")
-    crash_pattern = f"/var/crash/_{encoded_path}.*.crash"
+    if exe_candidates is None:
+        exe_candidates = [os.path.abspath(bin_path)]
+
+    encoded_candidates = []
+    for exe in exe_candidates:
+        encoded = os.path.abspath(exe).lstrip("/").replace("/", "_")
+        encoded_candidates.append(encoded)
+
     found_cores = []
 
-    for crash_file in glob.glob(crash_pattern):
-        # 2. Check if the crash is recent
-        mtime = os.path.getmtime(crash_file)
-        if mtime < since_timestamp:
-            continue
+    # --- Mechanism A: /var/crash/*.crash (bundled report, needs apport-unpack) ---
+    print("<details><summary><b>apport: crash-report workflow (/var/crash)</b></summary><pre>")
+    crash_dir = "/var/crash"
+    if os.path.isdir(crash_dir):
+        crash_matches = []
+        for encoded in encoded_candidates:
+            pattern = os.path.join(crash_dir, f"_{encoded}.*.crash")
+            crash_matches.extend(glob.glob(pattern))
 
-        # 3. Create a temp directory to unpack
-        with tempfile.TemporaryDirectory() as tmp_unpack:
+        crash_matches = sorted(set(crash_matches))
+        print(html.escape(f"checked {crash_dir}, {len(crash_matches)} candidate file(s) matched"))
+
+        for crash_file in crash_matches:
             try:
-                # 4. Use apport-unpack to extract the core
-                subprocess.run(["apport-unpack", crash_file, tmp_unpack], check=True)
-                
-                core_src = os.path.join(tmp_unpack, "CoreDump")
-                if os.path.exists(core_src):
-                    # Use PID from the crash file name or metadata if possible
-                    # For now, we'll just give it a unique name
-                    pid = crash_file.split('.')[-2] # Rough estimate from filename
+                mtime = os.path.getmtime(crash_file)
+            except OSError:
+                continue
+            if mtime < since_timestamp:
+                continue
+
+            with tempfile.TemporaryDirectory() as tmp_unpack:
+                try:
+                    res = subprocess.run(["apport-unpack", crash_file, tmp_unpack],
+                                          capture_output=True, text=True)
+                    if res.returncode != 0:
+                        print(html.escape(
+                            f"apport-unpack failed for {crash_file}: {res.stderr.strip()}"))
+                        continue
+
+                    core_src = os.path.join(tmp_unpack, "CoreDump")
+                    if not os.path.exists(core_src):
+                        print(html.escape(f"no CoreDump component in {crash_file}"))
+                        continue
+
+                    # PID is not reliable from the filename (that field is
+                    # the UID) -- pull it from the unpacked ProcStatus.
+                    pid = None
+                    proc_status_path = os.path.join(tmp_unpack, "ProcStatus")
+                    if os.path.exists(proc_status_path):
+                        with open(proc_status_path, "r", errors="replace") as pf:
+                            m = re.search(r'^Pid:\s+(\d+)', pf.read(), re.MULTILINE)
+                            if m:
+                                pid = m.group(1)
+                    if pid is None:
+                        pid = os.path.splitext(os.path.basename(crash_file))[0]
+
                     dest_name = f"core.apport.{pid}"
                     shutil.copy(core_src, os.path.join(target_dir, dest_name))
                     found_cores.append(dest_name)
-            except Exception:
+                    print(html.escape(f"recovered {os.path.basename(crash_file)} -> {dest_name}"))
+
+                except Exception as e:
+                    print(html.escape(f"exception processing {crash_file}: {e}"))
+                    continue
+    else:
+        print(html.escape(f"{crash_dir} does not exist on this system, skipping"))
+    print("</pre></details>")
+
+    # --- Mechanism B: /var/lib/apport/coredump/ (raw core, no unpacking) ---
+    print("<details><summary><b>apport: raw-coredump workflow (/var/lib/apport/coredump)</b></summary><pre>")
+    coredump_dir = "/var/lib/apport/coredump"
+    if os.path.isdir(coredump_dir):
+        try:
+            all_files = os.listdir(coredump_dir)
+        except OSError as e:
+            print(html.escape(f"cannot list {coredump_dir}: {e}"))
+            all_files = []
+
+        print(html.escape(f"checked {coredump_dir}, {len(all_files)} file(s) present"))
+
+        for fname in all_files:
+            if not fname.startswith("core."):
                 continue
-                
+
+            matched = False
+            for encoded in encoded_candidates:
+                if f".{encoded}." in fname or fname.startswith(f"core.{encoded}."):
+                    matched = True
+                    break
+            if not matched:
+                continue
+
+            full_path = os.path.join(coredump_dir, fname)
+            try:
+                mtime = os.path.getmtime(full_path)
+            except OSError:
+                continue
+            if mtime < since_timestamp:
+                continue
+
+            # PID is the second-to-last dot-separated field in this format:
+            #   core.<encoded_path>.<field>.<uuid>.<pid>.<counter>
+            parts = fname.split(".")
+            pid = parts[-2] if len(parts) >= 2 else os.path.basename(fname)
+
+            dest_name = f"core.apport.{pid}"
+            dest_path = os.path.join(target_dir, dest_name)
+            try:
+                shutil.copy(full_path, dest_path)
+                found_cores.append(dest_name)
+                print(html.escape(f"recovered {fname} -> {dest_name}"))
+            except PermissionError as e:
+                print(html.escape(f"permission denied copying {fname}: {e}"))
+            except Exception as e:
+                print(html.escape(f"failed to copy {fname}: {e}"))
+    else:
+        print(html.escape(f"{coredump_dir} does not exist on this system, skipping"))
+    print("</pre></details>")
+
     return found_cores
 
 def SaveCores(bin_path, test_name, start_time_epoch):
@@ -1347,107 +1582,132 @@ def SaveCores(bin_path, test_name, start_time_epoch):
     found_any = False
 
     # --- PHASE 1: LOCAL SEARCH ---
+    try:
+        with open("/proc/sys/kernel/core_pattern") as f:
+            core_pattern = f.read().strip()
+    except Exception:
+        core_pattern = ""
+    print(html.escape(f"core_pattern={core_pattern!r}"))
+    uses_systemd_coredump = core_pattern.startswith('|') and 'systemd-coredump' in core_pattern
+    uses_apport = core_pattern.startswith('|') and 'apport' in core_pattern
+
     local_cores = [f for f in os.listdir('.') if 'core' in f.lower() and os.path.isfile(f)]
     if local_cores:
         for c in local_cores:
             shutil.move(c, os.path.join(arch_dir, c))
         found_any = True
+    elif core_pattern.startswith('|'):
+        print(html.escape(
+            "core_pattern pipes to a collector (systemd-coredump/apport); "
+            "plain-file glob correctly found nothing here"))
 
     # --- PHASE 2: SYSTEMD-COREDUMP ---
     # Always check — MPI runs may produce multiple core dumps from different ranks.
     # Match by absolute exe path (COREDUMP_EXE) to distinguish tests that share a
     # binary name; bin_name (COMM) alone would be ambiguous across test directories.
     print("<details><summary><b>coredumpctl diagnostic</b></summary><pre>")
-    try:
-        since_str = datetime.datetime.fromtimestamp(start_time_epoch).strftime("%Y-%m-%d %H:%M:%S")
+    if not uses_systemd_coredump:
         print(html.escape(
-            f"coredumpctl: searching for exe candidates={exe_candidates} since={since_str}"))
+            f"core_pattern={core_pattern!r} does not pipe to systemd-coredump; skipping coredumpctl"))
+        print("</pre></details>")
+    else:
+        try:
+            since_str = datetime.datetime.fromtimestamp(start_time_epoch).strftime("%Y-%m-%d %H:%M:%S")
+            print(html.escape(
+                f"coredumpctl: searching for exe candidates={exe_candidates} since={since_str}"))
 
-        # Try --json=short first (systemd >= 248); fall back to text parsing for older systems.
-        pids = []
-        for exe in exe_candidates:
-            res = subprocess.run(
-                ["coredumpctl", "--no-pager", "list", exe, "--since", since_str, "--json=short"],
-                capture_output=True, text=True)
-            print(html.escape(f"coredumpctl --json=short exe={exe} exit={res.returncode}"))
-            if res.stderr.strip():
-                print(html.escape(res.stderr.strip()))
-            if res.returncode == 0 and res.stdout.strip():
-                try:
-                    for entry in json.loads(res.stdout):
-                        pids.append(str(entry['pid']))
-                    continue
-                except Exception as je:
-                    print(html.escape(f"json parse failed for exe={exe}: {je}"))
-
-            # Fallback: parse text output (works on systemd < 248).
-            # Lines look like: "Wed 2026-05-06 12:17:42 PDT  3526136 ..."
-            res2 = subprocess.run(
-                ["coredumpctl", "--no-pager", "list", exe, "--since", since_str],
-                capture_output=True, text=True)
-            print(html.escape(f"coredumpctl text fallback exe={exe} exit={res2.returncode}"))
-            if res2.stderr.strip():
-                print(html.escape(res2.stderr.strip()))
-            if res2.returncode == 0:
-                for line in res2.stdout.splitlines():
-                    parts = line.split()
-                    # Find the first purely-numeric token with enough digits to be
-                    # a PID, skipping the header and date/time tokens.  The format
-                    # is: DAY DATE TIME TZ PID UID GID SIG PRESENT EXE, but TZ can
-                    # vary so we scan rather than hard-coding column 4.
-                    for tok in parts:
-                        if tok.isdigit() and int(tok) > 1:
-                            pids.append(tok)
-                            break
-
-        # De-duplicate and keep original discovery order.
-        unique_pids = []
-        for pid in pids:
-            if pid not in unique_pids:
-                unique_pids.append(pid)
-
-        # Tighten matching for shared interpreters (e.g. /usr/bin/python3.X):
-        # keep only entries from the same working directory when available.
-        pids = []
-        for pid in unique_pids:
-            keep = True
-            try:
-                info_res = subprocess.run(
-                    ["coredumpctl", "--no-pager", "info", pid],
+            # Try --json=short first (systemd >= 248); fall back to text parsing for older systems.
+            pids = []
+            for exe in exe_candidates:
+                res = subprocess.run(
+                    ["coredumpctl", "--no-pager", "list", exe, "--since", since_str, "--json=short"],
                     capture_output=True, text=True)
-                if info_res.returncode == 0:
-                    m_cwd = re.search(r'^\s*CWD:\s+(.*)$', info_res.stdout, re.MULTILINE)
-                    if m_cwd:
-                        core_cwd = os.path.abspath(m_cwd.group(1).strip())
-                        if core_cwd != run_cwd:
-                            keep = False
-                            print(html.escape(
-                                f"coredumpctl: skipping pid={pid} due to cwd mismatch "
-                                f"({core_cwd} != {run_cwd})"))
-            except Exception as ie:
-                print(html.escape(f"coredumpctl info exception for pid={pid}: {ie}"))
-            if keep:
-                pids.append(pid)
+                print(html.escape(f"coredumpctl --json=short exe={exe} exit={res.returncode}"))
+                if res.stderr.strip():
+                    print(html.escape(res.stderr.strip()))
+                if res.returncode == 0 and res.stdout.strip():
+                    try:
+                        for entry in json.loads(res.stdout):
+                            pids.append(str(entry['pid']))
+                        continue
+                    except Exception as je:
+                        print(html.escape(f"json parse failed for exe={exe}: {je}"))
 
-        print(html.escape(f"coredumpctl: found PIDs: {pids}"))
-        for pid in pids:
-            out_path = os.path.join(arch_dir, f"core.systemd.{pid}")
-            dump_res = subprocess.run(
-                ["coredumpctl", "--no-pager", "dump", pid, "--output", out_path],
-                capture_output=True)
-            print(html.escape(f"coredumpctl dump pid={pid} exit={dump_res.returncode}"))
-            if dump_res.stderr.strip():
-                print(html.escape(dump_res.stderr.strip()))
-            if dump_res.returncode == 0:
-                found_any = True
-    except Exception as e:
-        print(html.escape(f"coredumpctl exception: {e}"))
-    print("</pre></details>")
+                # Fallback: parse text output (works on systemd < 248).
+                # Lines look like: "Wed 2026-05-06 12:17:42 PDT  3526136 ..."
+                res2 = subprocess.run(
+                    ["coredumpctl", "--no-pager", "list", exe, "--since", since_str],
+                    capture_output=True, text=True)
+                print(html.escape(f"coredumpctl text fallback exe={exe} exit={res2.returncode}"))
+                if res2.stderr.strip():
+                    print(html.escape(res2.stderr.strip()))
+                if res2.returncode == 0:
+                    for line in res2.stdout.splitlines():
+                        parts = line.split()
+                        # Find the first purely-numeric token with enough digits to be
+                        # a PID, skipping the header and date/time tokens.  The format
+                        # is: DAY DATE TIME TZ PID UID GID SIG PRESENT EXE, but TZ can
+                        # vary so we scan rather than hard-coding column 4.
+                        for tok in parts:
+                            if tok.isdigit() and int(tok) > 1:
+                                pids.append(tok)
+                                break
+
+            # De-duplicate and keep original discovery order.
+            unique_pids = []
+            for pid in pids:
+                if pid not in unique_pids:
+                    unique_pids.append(pid)
+
+            # Tighten matching for shared interpreters (e.g. /usr/bin/python3.X):
+            # keep only entries from the same working directory when available.
+            pids = []
+            for pid in unique_pids:
+                keep = True
+                try:
+                    info_res = subprocess.run(
+                        ["coredumpctl", "--no-pager", "info", pid],
+                        capture_output=True, text=True)
+                    if info_res.returncode == 0:
+                        m_cwd = re.search(r'^\s*CWD:\s+(.*)$', info_res.stdout, re.MULTILINE)
+                        if m_cwd:
+                            core_cwd = os.path.abspath(m_cwd.group(1).strip())
+                            if core_cwd != run_cwd:
+                                keep = False
+                                print(html.escape(
+                                    f"coredumpctl: skipping pid={pid} due to cwd mismatch "
+                                    f"({core_cwd} != {run_cwd})"))
+                except Exception as ie:
+                    print(html.escape(f"coredumpctl info exception for pid={pid}: {ie}"))
+                if keep:
+                    pids.append(pid)
+
+            print(html.escape(f"coredumpctl: found PIDs: {pids}"))
+            for pid in pids:
+                out_path = os.path.join(arch_dir, f"core.systemd.{pid}")
+                dump_res = subprocess.run(
+                    ["coredumpctl", "--no-pager", "dump", pid, "--output", out_path],
+                    capture_output=True)
+                print(html.escape(f"coredumpctl dump pid={pid} exit={dump_res.returncode}"))
+                if dump_res.stderr.strip():
+                    print(html.escape(dump_res.stderr.strip()))
+                if dump_res.returncode == 0:
+                    found_any = True
+        except Exception as e:
+            print(html.escape(f"coredumpctl exception: {e}"))
+        print("</pre></details>")
 
     # --- PHASE 3: APPORT (/var/crash) ---
-    apport_cores = find_apport_cores(bin_path, start_time_epoch, arch_dir)
-    if apport_cores:
-        found_any = True
+    print("<details><summary><b>apport diagnostic</b></summary><pre>")
+    if not uses_apport:
+        print(html.escape(
+            f"core_pattern={core_pattern!r} does not pipe to apport; skipping apport check"))
+        print("</pre></details>")
+    else:
+        apport_cores = find_apport_cores(bin_path, start_time_epoch, arch_dir, exe_candidates=exe_candidates)
+        print("</pre></details>")
+        if apport_cores:
+            found_any = True
 
     # --- FINAL PROCESSING ---
     if found_any:
