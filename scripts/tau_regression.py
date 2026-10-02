@@ -1603,55 +1603,41 @@ def SaveCores(bin_path, test_name, start_time_epoch):
 
     # --- PHASE 2: SYSTEMD-COREDUMP ---
     # Always check — MPI runs may produce multiple core dumps from different ranks.
-    # Match by absolute exe path (COREDUMP_EXE) to distinguish tests that share a
-    # binary name; bin_name (COMM) alone would be ambiguous across test directories.
-    print("<details><summary><b>coredumpctl diagnostic</b></summary><pre>")
-    if not uses_systemd_coredump:
-        print(html.escape(
-            f"core_pattern={core_pattern!r} does not pipe to systemd-coredump; skipping coredumpctl"))
-        print("</pre></details>")
-    else:
+    # Only emit this section at all when core_pattern actually routes here.
+    if uses_systemd_coredump:
+        print("<details><summary><b>coredumpctl diagnostic</b></summary><pre>")
         try:
             since_str = datetime.datetime.fromtimestamp(start_time_epoch).strftime("%Y-%m-%d %H:%M:%S")
             print(html.escape(
                 f"coredumpctl: searching for exe candidates={exe_candidates} since={since_str}"))
 
-            # Try --json=short first (systemd >= 248); fall back to text parsing for older systems.
-            pids = []
-            for exe in exe_candidates:
-                res = subprocess.run(
-                    ["coredumpctl", "--no-pager", "list", exe, "--since", since_str, "--json=short"],
-                    capture_output=True, text=True)
-                print(html.escape(f"coredumpctl --json=short exe={exe} exit={res.returncode}"))
-                if res.stderr.strip():
-                    print(html.escape(res.stderr.strip()))
-                if res.returncode == 0 and res.stdout.strip():
-                    try:
-                        for entry in json.loads(res.stdout):
-                            pids.append(str(entry['pid']))
-                        continue
-                    except Exception as je:
-                        print(html.escape(f"json parse failed for exe={exe}: {je}"))
+            # Do NOT filter by exe in the coredumpctl list invocation itself:
+            # its MATCH argument requires an exact fnmatch() match against the
+            # recorded COREDUMP_EXE, which can differ from our candidate paths
+            # due to symlinks, bind mounts, or autofs (e.g. /tmp/... vs the
+            # underlying /storage/... mount) — that mismatch is what caused
+            # "No coredumps found" even though a real core existed. Instead,
+            # list everything since the run started and match in Python below
+            # against each entry's real Executable/CWD via `coredumpctl info`.
+            res = subprocess.run(
+                ["coredumpctl", "--no-pager", "list", "--since", since_str],
+                capture_output=True, text=True)
+            print(html.escape(f"coredumpctl list --since {since_str} exit={res.returncode}"))
+            if res.stderr.strip():
+                print(html.escape(res.stderr.strip()))
 
-                # Fallback: parse text output (works on systemd < 248).
-                # Lines look like: "Wed 2026-05-06 12:17:42 PDT  3526136 ..."
-                res2 = subprocess.run(
-                    ["coredumpctl", "--no-pager", "list", exe, "--since", since_str],
-                    capture_output=True, text=True)
-                print(html.escape(f"coredumpctl text fallback exe={exe} exit={res2.returncode}"))
-                if res2.stderr.strip():
-                    print(html.escape(res2.stderr.strip()))
-                if res2.returncode == 0:
-                    for line in res2.stdout.splitlines():
-                        parts = line.split()
-                        # Find the first purely-numeric token with enough digits to be
-                        # a PID, skipping the header and date/time tokens.  The format
-                        # is: DAY DATE TIME TZ PID UID GID SIG PRESENT EXE, but TZ can
-                        # vary so we scan rather than hard-coding column 4.
-                        for tok in parts:
-                            if tok.isdigit() and int(tok) > 1:
-                                pids.append(tok)
-                                break
+            pids = []
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    parts = line.split()
+                    # Find the first purely-numeric token with enough digits to be
+                    # a PID, skipping the header and date/time tokens.  The format
+                    # is: DAY DATE TIME TZ PID UID GID SIG PRESENT EXE, but TZ can
+                    # vary so we scan rather than hard-coding column 4.
+                    for tok in parts:
+                        if tok.isdigit() and int(tok) > 1:
+                            pids.append(tok)
+                            break
 
             # De-duplicate and keep original discovery order.
             unique_pids = []
@@ -1659,24 +1645,42 @@ def SaveCores(bin_path, test_name, start_time_epoch):
                 if pid not in unique_pids:
                     unique_pids.append(pid)
 
-            # Tighten matching for shared interpreters (e.g. /usr/bin/python3.X):
-            # keep only entries from the same working directory when available.
+            # Match against our candidates via the recorded Executable, falling
+            # back to a "parentdir/basename" suffix comparison when the full
+            # path differs due to symlinks/bind mounts (e.g. /tmp/... vs the
+            # underlying /storage/... mount). A basename-only fallback would be
+            # too loose here: CWD isn't reported by this system's coredumpctl
+            # (older systemd), so it can't be used to disambiguate same-named
+            # binaries in different test directories the way it can elsewhere.
+            def _path_suffix(p):
+                return "/".join(os.path.normpath(p).split(os.sep)[-2:])
+            exe_suffixes = {_path_suffix(e) for e in exe_candidates}
             pids = []
             for pid in unique_pids:
-                keep = True
+                keep = False
                 try:
                     info_res = subprocess.run(
                         ["coredumpctl", "--no-pager", "info", pid],
                         capture_output=True, text=True)
                     if info_res.returncode == 0:
-                        m_cwd = re.search(r'^\s*CWD:\s+(.*)$', info_res.stdout, re.MULTILINE)
-                        if m_cwd:
-                            core_cwd = os.path.abspath(m_cwd.group(1).strip())
-                            if core_cwd != run_cwd:
-                                keep = False
-                                print(html.escape(
-                                    f"coredumpctl: skipping pid={pid} due to cwd mismatch "
-                                    f"({core_cwd} != {run_cwd})"))
+                        m_exe = re.search(r'^\s*Executable:\s+(.*)$', info_res.stdout, re.MULTILINE)
+                        core_exe = os.path.abspath(m_exe.group(1).strip()) if m_exe else None
+                        if core_exe and (core_exe in exe_candidates
+                                          or _path_suffix(core_exe) in exe_suffixes):
+                            keep = True
+                        elif core_exe:
+                            print(html.escape(
+                                f"coredumpctl: skipping pid={pid}, exe={core_exe} "
+                                "doesn't match any candidate"))
+                        if keep:
+                            m_cwd = re.search(r'^\s*CWD:\s+(.*)$', info_res.stdout, re.MULTILINE)
+                            if m_cwd:
+                                core_cwd = os.path.abspath(m_cwd.group(1).strip())
+                                if core_cwd != run_cwd:
+                                    keep = False
+                                    print(html.escape(
+                                        f"coredumpctl: skipping pid={pid} (exe={core_exe}) due to "
+                                        f"cwd mismatch ({core_cwd} != {run_cwd})"))
                 except Exception as ie:
                     print(html.escape(f"coredumpctl info exception for pid={pid}: {ie}"))
                 if keep:
@@ -1698,12 +1702,9 @@ def SaveCores(bin_path, test_name, start_time_epoch):
         print("</pre></details>")
 
     # --- PHASE 3: APPORT (/var/crash) ---
-    print("<details><summary><b>apport diagnostic</b></summary><pre>")
-    if not uses_apport:
-        print(html.escape(
-            f"core_pattern={core_pattern!r} does not pipe to apport; skipping apport check"))
-        print("</pre></details>")
-    else:
+    # Only emit this section at all when core_pattern actually routes here.
+    if uses_apport:
+        print("<details><summary><b>apport diagnostic</b></summary><pre>")
         apport_cores = find_apport_cores(bin_path, start_time_epoch, arch_dir, exe_candidates=exe_candidates)
         print("</pre></details>")
         if apport_cores:

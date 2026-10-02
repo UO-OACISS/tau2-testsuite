@@ -306,11 +306,12 @@ tmpconfig.f90 = "-fortran=amdflang"
 tmpconfig.pdt_config = " -GNU "
 tmpconfig.papi = "/storage/usersb/wspear/bin/SPACK/instinct/spack/opt/spack/linux-ubuntu22.04-zen3/gcc-11.4.0/papi-6.0.0.1-wolpsrjiqgxmmysdyd2nxmih2unpqdyz" # /packages/papi/6.0.0.1"
 tmpconfig.libunwind = "-unwind=download"
-tmpconfig.rocm = "-roctracer=/opt/rocm-5.2.0/roctracer/ -rocprofiler=/opt/rocm-5.2.0/rocprofiler/ -rocm"
+#tmpconfig.rocm = "-roctracer=/opt/rocm-5.2.0/roctracer/ -rocprofiler=/opt/rocm-5.2.0/rocprofiler/ -rocm" #DEPRECATED
+tmpconfig.rocm = "-rocprofsdk -rocm"
 tmpconfig.mpiBefore = "mpirun -np 4 "
 tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g3\ -Og"
-tmpconfig.modules=["rocm/5.6.0"]
+tmpconfig.modules=["rocm/7.1.1"]
 tmpconfig.spack = ["openmpi@4.1.5%rocmcc"]
 tmpconfig.url = "instinct.nic.uoregon.edu"
 
@@ -322,7 +323,8 @@ tmpconfig.pdt_config = " -GNU "
 #tmpconfig.papi = "-papi=/packages/papi/6.0.0.1" # /packages/papi/6.0.0.1"
 tmpconfig.libunwind = "-unwind=download"
 #tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
-tmpconfig.rocm = "-roctracer=/opt/rocm-7.1.1 -rocprofiler=/opt/rocm-7.1.1 -rocm"
+#tmpconfig.rocm = "-roctracer=/opt/rocm-7.1.1 -rocprofiler=/opt/rocm-7.1.1 -rocm" #DEPRECATED
+tmpconfig.rocm = "-rocprofsdk -rocm"
 tmpconfig.mpiBefore = "mpirun -np 4 -mca prte_forward_signals SIGQUIT,SIGINT,SIGTERM,SIGUSR1,SIGUSR2"
 tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g3\ -Og"
@@ -333,18 +335,20 @@ tmpconfig.url = "omnia"
 
 tmpconfig = odyssey_rocm = ModuleConfiguration("odyssey_rocm", "x86_64")
 tmpconfig.baseConfig = "-arch=x86_64 -c++=amdclang++ -cc=amdclang"
-tmpconfig.f90 = "-fortran=amdflang"
+tmpconfig.f90 = "-fortran=amdflang"   #This mpi is backed by gcc but built with rocm. 
 tmpconfig.envVars |= {'LEGACY_FFLAGS': ''}  # amdflang rejects -std=legacy
 tmpconfig.pdt_config = " -GNU "
 #tmpconfig.papi = "-papi=/packages/papi/6.0.0.1" # /packages/papi/6.0.0.1"
 tmpconfig.libunwind = "-unwind=download"
 #tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
-tmpconfig.rocm = "-roctracer=/opt/rocm-7.1.1 -rocprofiler=/opt/rocm-7.1.1 -rocm"
+#tmpconfig.rocm = "-roctracer=/opt/rocm-7.1.1 -rocprofiler=/opt/rocm-7.1.1 -rocm" #DEPRECATED
+tmpconfig.rocm = "-rocprofsdk -rocm -elfutils=download"
 tmpconfig.mpiBefore = "srun -n 4"
 tmpconfig.mpiCommand = "srun"
 #"mpirun -np 4 -mca prte_forward_signals SIGQUIT,SIGINT,SIGTERM,SIGUSR1,SIGUSR2"
 tmpconfig.mpi = "-mpi"
-tmpconfig.modules=[ "mvapich/4.1-rocm7.1.1" ]
+tmpconfig.modules=[ "rocm/7.1.1" ]#"mvapich/4.1-rocm7.1.1" ]
+tmpconfig.spack = [ "mpich" ]
 #tmpconfig.useropt = " -useropt=-g3\ -Og"
 #tmpconfig.modules=["rocm/7.1.1", "java"] #[ "rocm/5.5.0" , "mpich/031021-llvm12" ] "openmpi/4.1.8_gcc13.2.0",
 #tmpconfig.spack = ["openmpi"]
