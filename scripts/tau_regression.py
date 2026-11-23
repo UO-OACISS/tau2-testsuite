@@ -215,6 +215,7 @@ def system(command, timeout=720, details=True, reportError=True, reportTime=True
     if any(wrapper in command for wrapper in ["tau_exec", "tau_python"]):
         custom_env["TAU_TRACK_SIGNALS"] = "1"
         custom_env["TAU_DUMP_ON_SIGNAL"] = "1"
+        custom_env["TAU_ECHO_BACKTRACE"] = "1"
         
     full_command = f"{spackEnv} {timeCmd} {command}"
     
