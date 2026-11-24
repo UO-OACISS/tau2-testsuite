@@ -2123,6 +2123,215 @@ def checkMpiSanity(config, buildApps):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+_PYTHON_SANITY_PROBE = r"""
+import json, os, sys, sysconfig
+
+incdir = sysconfig.get_config_var("INCLUDEPY") or ""
+libdir = sysconfig.get_config_var("LIBDIR") or ""
+suffix = sysconfig.get_config_var("SHLIB_SUFFIX")
+if suffix is None:
+    ext = sysconfig.get_config_var("SHLIB_EXT")
+    suffix = ext.strip('"') if ext else ""
+libname = sysconfig.get_config_var("LDLIBRARY") or ""
+if suffix and libname.endswith(".a"):
+    libname = libname[:-2] + suffix
+if sysconfig.get_config_var("PYTHONFRAMEWORK"):
+    dylib = "libpython%s%s.dylib" % (
+        sysconfig.get_config_var("VERSION") or "",
+        sysconfig.get_config_var("ABIFLAGS") or "",
+    )
+    if libdir and os.path.exists(os.path.join(libdir, dylib)):
+        libname = dylib
+
+has_headers = bool(incdir and os.path.isfile(os.path.join(incdir, "Python.h")))
+libpath = os.path.join(libdir, libname) if (libdir and libname) else ""
+has_shared_libpython = bool(libpath and os.path.isfile(libpath))
+
+print("TAU_PY_SANITY=" + json.dumps({
+    "executable": sys.executable,
+    "realpath": os.path.realpath(sys.executable),
+    "version": "%d.%d.%d" % sys.version_info[:3],
+    "major_minor": [sys.version_info[0], sys.version_info[1]],
+    "incdir": incdir,
+    "has_headers": has_headers,
+    "libpath": libpath,
+    "has_shared_libpython": has_shared_libpython,
+    "can_pstubs": list(sys.version_info[:2]) >= [3, 12],
+}))
+""".strip()
+
+
+def _extract_python_configure_spec(python_opts):
+    """Parse config.python flags to determine which interpreter TAU configure uses.
+
+    Returns (mode, explicit_interp) where mode is one of:
+      'explicit' (-python=<interp> or -python3=<interp>),
+      'python3'  (-python3),
+      'python'   (-python, which falls back to python3 if python is absent).
+    """
+    tokens = _split_cmd_tokens(python_opts)
+    mode = "python"
+    explicit = ""
+    for tok in tokens:
+        if tok.startswith("-python3="):
+            mode, explicit = "explicit", tok.split("=", 1)[1]
+        elif tok.startswith("-python="):
+            mode, explicit = "explicit", tok.split("=", 1)[1]
+        elif tok == "-python3":
+            mode, explicit = "python3", ""
+        elif tok == "-python":
+            mode, explicit = "python", ""
+    return mode, explicit
+
+
+def _probe_python_interpreter(interp_cmd, label):
+    """Run _PYTHON_SANITY_PROBE under interp_cmd via _run_check_cmd (with spackEnv).
+
+    Returns (info_dict, error_reason).  info_dict is None on failure.
+    """
+    probe_cmd = f"{shlex.quote(interp_cmd)} -c {shlex.quote(_PYTHON_SANITY_PROBE)}"
+    rc, out, to = _run_check_cmd(probe_cmd, timeout=30, summary_label=label)
+    if to or rc != 0:
+        return None, _summarize_cmd_error(out, to, 30)
+    for ln in reversed(out.splitlines()):
+        if ln.startswith("TAU_PY_SANITY="):
+            try:
+                return json.loads(ln[len("TAU_PY_SANITY="):]), ""
+            except ValueError as exc:
+                return None, f"malformed probe JSON: {exc}"
+    return None, "probe exited 0 without TAU_PY_SANITY marker"
+
+
+def checkPythonSanity(config, buildApps):
+    """Run a fast pre-build Python sanity check after environment setup.
+
+    Verifies:
+      1. The Python interpreter TAU's ./configure will select exists and runs.
+      2. When libpython tests (use_libpython=True) will run via 'python3', the
+         configure-time interpreter and runtime 'python3' share the same
+         Python major.minor ABI, and Python.h + a shared libpython are present.
+      3. At least one TAU Python instrumentation mode (shared libpython or
+         pstubs for Python >= 3.12) is buildable.
+
+    Aborts immediately via error() + end(-1) before building TAU if any check
+    fails.  Skipped when no Python configuration is scheduled.
+    """
+    needs_python = bool((config.python or "").strip()) and any(
+        (python in tc.arguments) for tc in buildApps
+    )
+    if not needs_python:
+        output("No Python tests scheduled — skipping Python sanity check.")
+        return
+
+    outputHeader("Pre-build Python Sanity Check")
+
+    mode, explicit = _extract_python_configure_spec(config.python)
+    if mode == "explicit":
+        cfg_candidates = [explicit]
+    elif mode == "python3":
+        cfg_candidates = ["python3"]
+    else:
+        cfg_candidates = ["python", "python3"]
+
+    cfg_interp = ""
+    for cand in cfg_candidates:
+        rc, out, to = _run_check_cmd(f"command -v {shlex.quote(cand)}", timeout=15)
+        if not to and rc == 0 and out.strip():
+            cfg_interp = out.strip().splitlines()[-1].strip()
+            break
+
+    if not cfg_interp:
+        error(
+            f"Python sanity check failed: no Python interpreter found in PATH "
+            f"for config.python='{html.escape(config.python)}' "
+            f"(tried: {', '.join(cfg_candidates)}) — aborting before building TAU!"
+        )
+        end(-1)
+
+    cfg_info, err = _probe_python_interpreter(
+        cfg_interp, f"Probe configure Python: {cfg_interp}"
+    )
+    if cfg_info is None:
+        error(
+            f"Python sanity check failed: could not query configure interpreter "
+            f"'{html.escape(cfg_interp)}' ({err}) — aborting before building TAU!"
+        )
+        end(-1)
+
+    has_libpython = cfg_info["has_headers"] and cfg_info["has_shared_libpython"]
+    can_pstubs = cfg_info["can_pstubs"]
+
+    # Check whether any scheduled Python test invokes 'python3' directly
+    # (auto.py / manual.py) and satisfies configRequirements.
+    runs_python3_tests = any(
+        t.binName == "python3"
+        and all(getattr(config, k, None) == v for k, v in t.configRequirements.items())
+        for tc in buildApps if (python in tc.arguments)
+        for t in tc.tests
+    )
+
+    if runs_python3_tests:
+        rc, out, to = _run_check_cmd("command -v python3", timeout=15)
+        if to or rc != 0 or not out.strip():
+            reason = _summarize_cmd_error(out, to, 15)
+            error(
+                f"Python sanity check failed: 'python3' not found in PATH for "
+                f"libpython tests ({reason}) — aborting before building TAU!"
+            )
+            end(-1)
+        rt_interp = out.strip().splitlines()[-1].strip()
+
+        if os.path.realpath(rt_interp) == cfg_info["realpath"]:
+            rt_info = cfg_info
+        else:
+            rt_info, rt_err = _probe_python_interpreter(
+                rt_interp, f"Probe runtime python3: {rt_interp}"
+            )
+            if rt_info is None:
+                error(
+                    f"Python sanity check failed: could not query runtime python3 "
+                    f"'{html.escape(rt_interp)}' ({rt_err}) — aborting before building TAU!"
+                )
+                end(-1)
+
+        if cfg_info["major_minor"] != rt_info["major_minor"]:
+            error(
+                f"Python sanity check failed: Python ABI mismatch between TAU configure "
+                f"interpreter '{html.escape(cfg_interp)}' (Python {cfg_info['version']}) "
+                f"and runtime python3 '{html.escape(rt_interp)}' (Python {rt_info['version']}) "
+                "— aborting before building TAU!"
+            )
+            end(-1)
+
+    if getattr(config, "use_libpython", False) and not has_libpython:
+        missing = []
+        if not cfg_info["has_headers"]:
+            missing.append(f"Python.h in '{cfg_info['incdir']}'")
+        if not cfg_info["has_shared_libpython"]:
+            missing.append(f"shared library '{cfg_info['libpath'] or 'libpython'}'")
+        error(
+            f"Python sanity check failed: config.use_libpython=True requires headers and "
+            f"shared libpython for '{html.escape(cfg_interp)}' (Python {cfg_info['version']}), "
+            f"but missing: {html.escape(', '.join(missing))} — aborting before building TAU!"
+        )
+        end(-1)
+
+    if not has_libpython and not can_pstubs:
+        error(
+            f"Python sanity check failed: '{html.escape(cfg_interp)}' (Python {cfg_info['version']}) "
+            f"lacks shared libpython ('{html.escape(cfg_info['libpath'])}') and is < 3.12 "
+            f"(required for pstubs) — aborting before building TAU!"
+        )
+        end(-1)
+
+    output(
+        f"Python sanity check passed: {html.escape(cfg_interp)} "
+        f"(Python {cfg_info['version']}, "
+        f"libpython={'yes' if has_libpython else 'no'}, "
+        f"pstubs={'yes' if can_pstubs else 'no'})."
+    )
+
+
 def RunAllTests(config, buildApps):
     hasProf = True
 #    if config.scorep == "" and ScorepConf in buildApps:
@@ -2449,6 +2658,7 @@ function toggleAll(open) {
     buildApps = filter_buildapps(buildApps, _args.tests)
 
     checkMpiSanity(config, buildApps)
+    checkPythonSanity(config, buildApps)
 
     systemq("rm -rf " + TAU_ROOT + "/" + config.arch)
 

@@ -82,7 +82,7 @@ class Configuration:
         self.envVars = {'TAU_TRACK_SIGNALS':'1'}
         self.url = ""
         self.remoteHome = ""  # set in scripts/local_settings.py
-        self.python = "-python -pthread"
+        self.python = "-python3 -pthread"
         self.use_libpython = False
         configurations[self.name]=self
 

@@ -445,8 +445,13 @@ def _build_remote_cmd(platform: str, cfg, profile_checks: bool = False,
     tests_arg = (" --tests " + " ".join(shlex.quote(t) for t in tests)) if tests else ""
 
     steps = [
-        # Try module-load Python; tolerate failure (spack / system Python also work)
-        "{ module load python 2>/dev/null && unset PYTHONHOME; } || true",
+        # Only module-load Python when python3 is missing or < 3.12; avoids
+        # shadowing a newer Spack/venv Python (e.g. hopper1's Spack 3.14 with
+        # libpython.so) with a module Python that lacks libpython or 'python'.
+        (
+            "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null"
+            " || { module load python 2>/dev/null && unset PYTHONHOME; } || true"
+        ),
         f"export PYTHONPATH={dest}/scripts",
         "ulimit -c unlimited || true",
         f"mkdir -p {dest}",
