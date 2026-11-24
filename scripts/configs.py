@@ -435,7 +435,10 @@ tmpconfig.mpi = "-mpi"
 # Use Cray PE UCX (craype-network-ucx + cray-mpich-ucx/8.1.30) to bypass
 # gilgamesh's broken /opt/mvapich/tpl/lib/libefa.so.1 pulled in by Cray OFI.
 tmpconfig.modules=[ "craype-x86-rome", "PrgEnv-nvidia", "craype-network-ucx", "cray-mpich-ucx/8.1.30", "gcc/12.2.0" ] #, "nvhpc/23.5" ]
-# No spack mpich: use Cray PE MPI (cray-mpich) so mpicc/mpicxx wrap nvc/nvc++
+# No spack mpich: use Cray PE MPI (cray-mpich) so mpicc/mpicxx wrap nvc/nvc++.
+# Use Spack python%gcc@8.5.0 (RHEL 8 binutils-compatible ELF + shared libpython)
+# so use_libpython=True links cleanly under NVHPC and survives cleanBFD's module purge.
+tmpconfig.spack = [ "python%gcc@8.5.0" ]
 tmpconfig.cleanBFD=True
 tmpconfig.envVars |= {'EXTRA_FFLAGS':'-noswitcherror'}
 tmpconfig.url = "gilgamesh.nic.uoregon.edu"

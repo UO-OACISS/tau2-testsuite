@@ -11,6 +11,7 @@ Requirements: Python 3.9+, rsync, ssh, scp, git on the controlling host.
 import sys
 import os
 import re
+import html
 import shlex
 import shutil
 import smtplib
@@ -509,9 +510,10 @@ def _run_platform(platform: str, cfg, html_path: pathlib.Path,
 
 def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False,
                  profile_checks: bool = False,
-                 tests: list[str] | None = None) -> None:
-    """Launch all platforms in parallel; collect exit codes when done."""
+                 tests: list[str] | None = None) -> dict[str, int]:
+    """Launch all platforms in parallel; return {platform_name: exit_code}."""
     n = 1 if serial else (len(active_cfgs) or 1)
+    platform_rcs: dict[str, int] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
         futures = {
             pool.submit(
@@ -529,19 +531,118 @@ def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False
             try:
                 rc = fut.result()
             except Exception as exc:
-                log_error(f"{name}: unexpected exception: {exc}")
+                platform_rcs[name] = -1
+                log_error(f"{name}: launcher exception: {exc}")
             else:
+                platform_rcs[name] = rc
                 if rc != 0:
-                    log_error(f"{name} exited with code {rc}")
+                    print(f"{name} finished with exit code {rc}.", flush=True)
                 else:
                     print(f"{name} completed successfully.", flush=True)
     print("All platform tests complete.", flush=True)
+    return platform_rcs
 
 
 # ── Results checking and publishing ────────────────────────────────────────────
 
-def check_and_publish(date_dir: pathlib.Path, lprint, timing_lines: list | None = None, *, send_email: bool = True) -> None:
+def _short_msg(msg: str, limit: int = 220) -> str:
+    """Collapse whitespace, trim boilerplate suffix, and cap length."""
+    cleaned = re.sub(r"\s+", " ", html.unescape(msg)).strip()
+    cleaned = re.sub(r"\s*[—-]\s*aborting before building TAU!$", "", cleaned)
+    if len(cleaned) > limit:
+        return cleaned[: limit - 3] + "..."
+    return cleaned
+
+
+def _classify_fehler(msg: str) -> str:
+    """Categorize a FEHLER line as 'sanity', 'build', or 'test'."""
+    low = msg.lower()
+    if any(k in low for k in (
+        "sanity check failed",
+        "aborting before building tau",
+        "spack load failed",
+        "tau_root not found",
+        "invalid run directory",
+        "couldn't find config",
+    )):
+        return "sanity"
+    if (
+        "./configure " in low
+        or "cleanbfd" in low
+        or re.search(r"\bmake\b.*\bclean\s+install\b", low)
+        or ("pdt" in low and any(k in low for k in ("failed", "not found", "skipping all tau builds")))
+    ):
+        return "build"
+    return "test"
+
+
+def _summarize_platform_failure(
+    name: str, html_file: pathlib.Path, exit_code: int | None
+) -> str | None:
+    """Return a single concise failure summary for one platform, or None if OK."""
+    if not html_file.is_file():
+        if exit_code not in (0, None):
+            return f"{name}: script/SSH failure (missing log, exit code {exit_code})"
+        return None
+
+    try:
+        text = html_file.read_text(errors="replace")
+    except OSError as exc:
+        return f"{name}: could not read log ({exc})"
+
+    is_incomplete = "</html>" not in text
+    has_failure_marker = "Failure: Encountered" in text
+    fehlers = [
+        _short_msg(m)
+        for m in re.findall(r"^FEHLER:\s*(.+)$", text, flags=re.MULTILINE)
+    ]
+
+    if not is_incomplete and not has_failure_marker and not fehlers and exit_code in (0, None):
+        return None
+
+    if is_incomplete and not fehlers:
+        rc_note = f", exit code {exit_code}" if exit_code not in (0, None) else ""
+        return f"{name}: script/SSH failure (INCOMPLETE log{rc_note})"
+
+    sanity = [m for m in fehlers if _classify_fehler(m) == "sanity"]
+    builds = [m for m in fehlers if _classify_fehler(m) == "build"]
+    tests_ = [m for m in fehlers if _classify_fehler(m) == "test"]
+
+    if sanity:
+        return f"{name}: pre-build sanity check failed — {sanity[0]}"
+
+    suffix = " [INCOMPLETE log]" if is_incomplete else ""
+    if builds and not tests_:
+        plural = "s" if len(builds) != 1 else ""
+        return f"{name}: {len(builds)} TAU/PDT build failure{plural}{suffix} — {builds[0]}"
+    if builds and tests_:
+        total = len(builds) + len(tests_)
+        return (
+            f"{name}: {total} errors ({len(builds)} TAU/PDT build, {len(tests_)} test)"
+            f"{suffix} — {builds[0]}"
+        )
+    if tests_:
+        n = len(tests_)
+        plural = "s" if n != 1 else ""
+        if n > 1 and len(set(tests_)) == 1:
+            return f"{name}: {n} test failures{suffix} ({n}x: {tests_[0]})"
+        detail = f"first: {tests_[0]}" if n > 1 else tests_[0]
+        return f"{name}: {n} test failure{plural}{suffix} ({detail})"
+
+    rc_note = f"exit code {exit_code}" if exit_code not in (0, None) else "failure marker in log"
+    return f"{name}: script failure ({rc_note}){suffix}"
+
+
+def check_and_publish(
+    date_dir: pathlib.Path,
+    lprint,
+    timing_lines: list | None = None,
+    *,
+    send_email: bool = True,
+    platform_rcs: dict[str, int] | None = None,
+) -> None:
     """Run checkresults.py, scp results to webhost, send email summary."""
+    rcs = platform_rcs or {}
 
     # Run checkresults.py from the dated results directory
     r = subprocess.run(
@@ -550,17 +651,30 @@ def check_and_publish(date_dir: pathlib.Path, lprint, timing_lines: list | None 
         capture_output=True,
         text=True,
     )
-    if r.returncode != 0 or "found an error!" in r.stdout:
-        log_error("checkresults.py reported errors")
 
-    # Scan HTML files for in-band failure markers
+    # Summarize each failing platform once (deduplicating exit code + HTML markers)
+    platform_failures = 0
+    seen_names: set[str] = set()
     for html_file in sorted(date_dir.glob("*.html")):
-        try:
-            text = html_file.read_text(errors="replace")
-        except OSError:
+        if html_file.name == "fatal_error.html":
             continue
-        if "Failure: Encountered" in text:
-            log_error(f"Failure marker found in {html_file.name}")
+        name = html_file.stem
+        seen_names.add(name)
+        summary = _summarize_platform_failure(name, html_file, rcs.get(name))
+        if summary:
+            log_error(summary)
+            platform_failures += 1
+
+    for name, rc in sorted(rcs.items()):
+        if name not in seen_names and rc != 0:
+            summary = _summarize_platform_failure(name, date_dir / f"{name}.html", rc)
+            if summary:
+                log_error(summary)
+                platform_failures += 1
+
+    # Only report checkresults.py separately if it flagged an issue no platform summary covered
+    if (r.returncode != 0 or "found an error!" in r.stdout) and platform_failures == 0 and not _errors:
+        log_error("checkresults.py reported errors")
 
     passed  = not _errors
     subject = "TAU Regression OK" if passed else "TAU Regression Encountered Errors"
@@ -790,9 +904,11 @@ def main() -> int:
 
             t0 = time.monotonic()
             lprint("=== launch_tests ===")
-            launch_tests(active_cfgs, date_dir, serial=args.serial,
-                         profile_checks=args.profile_checks,
-                         tests=args.tests)
+            platform_rcs = launch_tests(
+                active_cfgs, date_dir, serial=args.serial,
+                profile_checks=args.profile_checks,
+                tests=args.tests,
+            )
             tests_elapsed = time.monotonic() - t0
             lprint(f"  done in {tests_elapsed:.0f}s")
 
@@ -805,6 +921,7 @@ def main() -> int:
                     f"  Tests completed in {fmt_duration(tests_elapsed)}",
                 ],
                 send_email=not args.no_email,
+                platform_rcs=platform_rcs,
             )
 
         lprint(f"Ended at {datetime.datetime.now()}")
