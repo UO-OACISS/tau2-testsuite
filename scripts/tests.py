@@ -209,7 +209,7 @@ base = base + "  -ebs "
 #ioMemEbsExec = TauExec(base, "ioMemEbsExec")  # -memory
 ioMemEbsExec=TauExec("-ebs -io -memory ","ioMemEbsExec")
 ioMemEbsExec.useTauExec = True
-ioMemExec.useMemory = True
+ioMemEbsExec.useMemory = True
 ioMemEbsExec.useEBS = True
 
 

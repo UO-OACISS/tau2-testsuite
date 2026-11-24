@@ -64,25 +64,35 @@ def modcommand(command, *arguments):
 
 
 # Module families where only one member may be loaded at a time.
-# When loading a module whose name starts with one of these prefixes,
-# any currently-loaded module with the same prefix will be swapped out
-# rather than attempting a plain load (which would fail or silently misbehave).
-_EXCLUSIVE_PREFIXES = (
-        'PrgEnv-',
+# Each entry is a tuple of prefixes/exact-names belonging to the same exclusive
+# family.  When loading a module matching any family, any currently-loaded
+# module in that same family will be swapped out rather than attempting a plain
+# load (which would fail or silently misbehave).
+_EXCLUSIVE_FAMILIES = (
+        ('PrgEnv-',),
+        ('craype-network-',),
+        ('cray-mpich',),
+        ('gcc/', 'gcc-native/', 'gcc-native'),
 )
+
+
+def _matches_family(modname, family):
+        for pat in family:
+                base = pat.rstrip('-/')
+                if modname == base or modname.startswith(pat):
+                        return True
+        return False
 
 
 def smart_load(modname):
         """Load a module, swapping out any conflicting module in the same
         exclusive family.  Falls back to a plain 'module load' when no
         conflict is detected."""
-        loaded = os.environ.get('LOADEDMODULES', '').split(':')
-        for prefix in _EXCLUSIVE_PREFIXES:
-                if modname.startswith(prefix):
-                        # Strip optional version suffix for the prefix match
+        loaded = [m for m in os.environ.get('LOADEDMODULES', '').split(':') if m]
+        for family in _EXCLUSIVE_FAMILIES:
+                if _matches_family(modname, family):
                         conflict = next(
-                                (m for m in loaded
-                                 if m == prefix[:-1] or m.startswith(prefix)),
+                                (m for m in loaded if _matches_family(m, family)),
                                 None
                         )
                         if conflict and conflict != modname:

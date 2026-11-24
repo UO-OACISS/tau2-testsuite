@@ -10,6 +10,8 @@ import datetime
 import json
 import fnmatch
 import re
+import shlex
+import signal
 #import cgi
 import html
 import configs
@@ -23,6 +25,8 @@ import time
 errorsFound = 0
 warningsFound = 0
 spackEnv=""
+TEST_ROOT=""
+TAU_ROOT=""
 
 # ---------------------------------------------------------------------------
 # Profile comparison configuration
@@ -139,12 +143,6 @@ def usage():
     print("Usage: tau_regression.py <configuration> [run_root] [--tests DIR ...]")
     sys.exit(-1)
 
-import subprocess
-import os
-import sys
-import signal
-import html
-
 def _all_descendant_pids(root_pid):
     """
     Walk /proc to find all live descendant PIDs of root_pid, recursively.
@@ -233,10 +231,12 @@ def system(command, timeout=720, details=True, reportError=True, reportTime=True
         start_new_session=True 
     )
     
+    timed_out = False
     try:
         retval = proc.wait(timeout=timeout if timeout > 0 else None)
         
     except subprocess.TimeoutExpired:
+        timed_out = True
         print(f"\n[TIMEOUT] Command hung after {timeout}s. Gathering descendant tree...")
         sys.stdout.flush()
         
@@ -280,18 +280,23 @@ def system(command, timeout=720, details=True, reportError=True, reportTime=True
                 except ProcessLookupError:
                     pass
             retval = 124
+        else:
+            # Process exited during SIGQUIT grace period (e.g. srun revoking
+            # a queued allocation and exiting 1).  Normalise to 124 so callers
+            # and error reporting always recognise this as a timeout.
+            retval = 124
             
     print("</pre>" + detEnd)
     
     if reportError:
-        if retval == 124:
-            error(f"{command} timed out ({timeout/60} minutes)!")
+        if timed_out or retval == 124:
+            error(f"{command} timed out ({timeout/60:.1f} minutes)!")
         elif retval != 0:
             error(f"{command} failed! ({retval})")
             
     return retval
 
-# 2 minute system call
+# 3 minute system call (historically 2 minutes)
 def system2Min(command):
     return system(command, 180)
 
@@ -321,10 +326,10 @@ def getEnvString(config):
 def executeSequential(command, config):
     envString = getEnvString(config)
     if (envString):
-        retval = system2Min("time "+config.seqBefore + " --env " +
+        retval = system2Min(config.seqBefore + " --env " +
                             envString + " " + command + " " + config.seqAfter)
     else:
-        retval = system2Min("time "+config.seqBefore + " " +
+        retval = system2Min(config.seqBefore + " " +
                             command + " " + config.seqAfter)
     return retval
 
@@ -332,10 +337,10 @@ def executeMpi(command, config):
     envString = getEnvString(config)
     # systemq("env")
     if (envString):
-        retval = system2Min("time "+config.mpiBefore + " --env " +
+        retval = system2Min(config.mpiBefore + " --env " +
                             envString + " " + command + " " + config.mpiAfter)
     else:
-        retval = system2Min("time "+config.mpiBefore + " " +
+        retval = system2Min(config.mpiBefore + " " +
                             command + " " + config.mpiAfter)
     return retval
 
@@ -575,11 +580,11 @@ def batchBuildTAU(config, testmap):
         cdres = chdir(TAU_ROOT)
         if cdres != 0:
             error("TAU_ROOT not found! Aborting!")
-            return cdres
+            return testmap
         retval = system("bash -c \"CC=gcc ./configure -bfd=download -cc=gcc\"")
         if retval != 0:
-            #error("Error: failed to configure!")
-            return retval
+            error("Error: cleanBFD configure failed! Skipping all TAU builds!")
+            return testmap
         config.prepare()
 
     for tauconf in testmap:
@@ -1724,43 +1729,398 @@ def SaveCores(bin_path, test_name, start_time_epoch):
         os.rmdir(arch_dir)
         output("No cores found in any location.", "3", "darkorange")
 
-def checkSlurmAvailability(config):
-    """Check that required SLURM partitions have at least one usable node.
+def _run_check_cmd(command, timeout=30, summary_label=None):
+    """Run a shell command with active spackEnv, log it to HTML, and return
+    (returncode, combined_output, timed_out).
 
-    Scans mpiBefore and seqBefore for '-p <partition>'.  If a partition is
-    found and sinfo is available, confirms that the partition has at least one
-    idle/allocated/mixed/reserved node.  Aborts the test run if no usable
-    nodes are found, preventing the run from hanging on a down cluster.
+    Kills the entire child process group on timeout so hung launchers (srun,
+    mpirun) do not linger in the background.
     """
-    partitions = set()
-    for field in (config.mpiBefore, config.seqBefore):
-        m = re.search(r'-p\s+(\S+)', field)
-        if m:
-            partitions.add(m.group(1))
+    full_command = f"{spackEnv} {command}" if spackEnv else command
+    label = summary_label or f"{os.getcwd()}> {command}"
+    print("<details><summary><b>" + html.escape(label) + "</b></summary><pre>")
+    sys.stdout.flush()
 
-    if not partitions:
+    proc = subprocess.Popen(
+        full_command,
+        shell=True,
+        executable="/bin/bash",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    )
+    timed_out = False
+    try:
+        out, _ = proc.communicate(timeout=timeout if timeout > 0 else None)
+        retval = proc.returncode
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        out, _ = proc.communicate()
+        out = (out or "") + f"\n[TIMEOUT after {timeout}s]"
+        retval = 124
+
+    if out:
+        print(html.escape(out.rstrip("\n")))
+    print("</pre></details>")
+    sys.stdout.flush()
+    return retval, out or "", timed_out
+
+
+def _summarize_cmd_error(out, timed_out, timeout):
+    """Extract a concise, HTML-escaped one-line reason from command output."""
+    if timed_out:
+        return f"timed out after {timeout}s"
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    if not lines:
+        return "no output"
+    keywords = ("error", "fatal", "unable", "failed", "cannot", "not found",
+                "denied", "invalid", "undefined", "refused", "rejected",
+                "impossible", "down", "drain")
+    preferred = [ln for ln in lines if any(k in ln.lower() for k in keywords)]
+    snippet = " | ".join((preferred or lines)[-2:])
+    if len(snippet) > 300:
+        snippet = snippet[:297] + "..."
+    return html.escape(snippet)
+
+
+def _split_cmd_tokens(cmd_str):
+    """Tokenise a shell launcher prefix string safely."""
+    if not cmd_str or not cmd_str.strip():
+        return []
+    try:
+        return shlex.split(cmd_str)
+    except ValueError:
+        return cmd_str.split()
+
+
+def _extract_launcher(cmd_str, fallback=""):
+    """Return the executable token from a launcher string (e.g. 'srun', 'mpirun')."""
+    tokens = _split_cmd_tokens(cmd_str)
+    return tokens[0] if tokens else (fallback or "").strip()
+
+
+def _extract_slurm_partition(cmd_str):
+    """Extract the partition name from -p/--partition flags in a launcher command."""
+    tokens = _split_cmd_tokens(cmd_str)
+    for i, tok in enumerate(tokens):
+        if tok in ("-p", "--partition") and i + 1 < len(tokens):
+            return tokens[i + 1]
+        if tok.startswith("--partition="):
+            return tok.split("=", 1)[1]
+        if tok.startswith("-p") and len(tok) > 2:
+            return tok[2:]
+    return None
+
+
+def _extract_mpi_ranks(cmd_str):
+    """Extract the requested MPI rank count (-n, -np, --ntasks) from a launcher command."""
+    tokens = _split_cmd_tokens(cmd_str)
+    for i, tok in enumerate(tokens):
+        if tok in ("-n", "-np", "--ntasks") and i + 1 < len(tokens):
+            if tokens[i + 1].isdigit():
+                return int(tokens[i + 1])
+        elif tok.startswith("--ntasks="):
+            val = tok.split("=", 1)[1]
+            if val.isdigit():
+                return int(val)
+        elif tok.startswith("-np") and tok[3:].isdigit():
+            return int(tok[3:])
+        elif tok.startswith("-n") and len(tok) > 2 and tok[2:].isdigit():
+            return int(tok[2:])
+    return None
+
+
+def _inject_srun_flags(cmd_str, extra_flags):
+    """Insert extra srun flags immediately after the leading 'srun' token."""
+    tokens = _split_cmd_tokens(cmd_str)
+    if not tokens:
+        return cmd_str
+    injected = []
+    for flag in extra_flags:
+        flag_key = flag.split("=", 1)[0]
+        if any(t == flag_key or t.startswith(flag_key + "=") for t in tokens):
+            continue
+        injected.append(flag)
+    return " ".join(shlex.quote(t) for t in ([tokens[0]] + injected + tokens[1:]))
+
+
+def _mpi_c_compiler_candidates(config):
+    """Return ordered MPI C compiler wrapper candidates for this platform config."""
+    base_cfg = getattr(config, "baseConfig", "") or ""
+    m = re.search(r'(?<![a-zA-Z0-9_])-cc=(\S+)', base_cfg)
+    cc_val = m.group(1) if m else ""
+    if config.arch == "craycnl" or cc_val == "cc":
+        return ["cc", "mpicc"]
+    if cc_val in ("icx", "icc") or "-c++=icpx" in base_cfg:
+        return ["mpiicx", "mpiicc", "mpicc"]
+    return ["mpicc", "mpiicx", "mpiicc"]
+
+
+_MPI_SANITY_SRC = r"""#include <mpi.h>
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+    int rank = -1, size = -1;
+    if (MPI_Init(&argc, &argv) != MPI_SUCCESS) {
+        fprintf(stderr, "MPI_Init failed\n");
+        return 1;
+    }
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    MPI_Barrier(MPI_COMM_WORLD);
+    if (rank == 0) {
+        printf("TAU_MPI_SANITY_OK size=%d\n", size);
+        fflush(stdout);
+    }
+    MPI_Finalize();
+    return 0;
+}
+"""
+
+
+def checkSlurmAvailability(config, check_mpi=True, check_seq=True):
+    """Check that SLURM nodes and immediate job allocations work before building TAU.
+
+    Triggers whenever 'srun' is used in mpiBefore or seqBefore — whether or not
+    an explicit '-p <partition>' flag is present (when omitted, checks the
+    cluster's default partition).  Uses the actual srun flags (including -n)
+    with --immediate=15 so queued/starved allocations fail fast with a clear
+    diagnostic instead of timing out every test.
+    """
+    slurm_cmds = []
+    if check_mpi and os.path.basename(_extract_launcher(config.mpiBefore)) == "srun":
+        slurm_cmds.append(("mpiBefore", config.mpiBefore.strip()))
+    if check_seq and os.path.basename(_extract_launcher(config.seqBefore)) == "srun":
+        slurm_cmds.append(("seqBefore", config.seqBefore.strip()))
+
+    if not slurm_cmds:
         return
 
-    # If sinfo is not present this is not a SLURM system; skip the check.
-    if subprocess.run(["which", "sinfo"], capture_output=True).returncode != 0:
+    sinfo_rc, _, _ = _run_check_cmd("which sinfo", timeout=15)
+    has_sinfo = (sinfo_rc == 0)
+
+    seen_cmds = set()
+    for label, cmd_str in slurm_cmds:
+        if cmd_str in seen_cmds:
+            continue
+        seen_cmds.add(cmd_str)
+        partition = _extract_slurm_partition(cmd_str)
+        part_desc = f"partition '{partition}'" if partition else "default partition (no -p specified)"
+        output(f"Checking SLURM availability for {label} ({part_desc})")
+
+        if has_sinfo:
+            if partition:
+                rc, out, to = _run_check_cmd(
+                    f"sinfo -p {shlex.quote(partition)} -h -t idle,alloc,mixed,reserved -o '%n'",
+                    timeout=30,
+                )
+                usable = (rc == 0 and bool(out.strip()))
+            else:
+                rc, out, to = _run_check_cmd(
+                    "sinfo -h -t idle,alloc,mixed,reserved -o '%P %n'",
+                    timeout=30,
+                )
+                usable = (
+                    rc == 0
+                    and any("*" in ln.split()[0] for ln in out.splitlines() if ln.strip())
+                )
+            if not usable:
+                diag_cmd = f"sinfo -p {shlex.quote(partition)}" if partition else "sinfo"
+                _run_check_cmd(diag_cmd, timeout=15)
+                reason = _summarize_cmd_error(out, to, 30) if (rc != 0 or to) else "all nodes down/drained/offline or partition unavailable"
+                error(
+                    f"SLURM sanity check failed: no usable nodes in {part_desc} "
+                    f"for {label}='{html.escape(cmd_str)}' ({reason}) — aborting before building TAU!"
+                )
+                end(-1)
+
+        probe_cmd = _inject_srun_flags(
+            cmd_str, ["--job-name=tau_health_check", "--immediate=15"]
+        ) + " true"
+        rc, out, to = _run_check_cmd(probe_cmd, timeout=45)
+        if to or rc != 0:
+            diag_sinfo = f"sinfo -p {shlex.quote(partition)}" if partition else "sinfo"
+            _run_check_cmd(diag_sinfo, timeout=15)
+            _run_check_cmd(
+                "squeue -h -o '%.10i %.9P %.12j %.10u %.2t %.10M %.4D %R' | head -n 20",
+                timeout=15,
+            )
+            reason = _summarize_cmd_error(out, to, 45)
+            error(
+                f"SLURM sanity check failed on {part_desc}: '{html.escape(probe_cmd)}' "
+                f"failed (rc={rc}: {reason}) — aborting before building TAU!"
+            )
+            end(-1)
+
+        output(f"SLURM check passed for {label} ({part_desc}).")
+
+
+def checkMpiSanity(config, buildApps):
+    """Run a fast pre-build sanity check for SLURM and MPI after environment setup.
+
+    Verifies:
+      1. The configured launcher (from mpiBefore/seqBefore) exists in PATH.
+      2. Any SLURM launcher (with or without -p) has usable nodes and can
+         allocate tasks immediately (--immediate=15).
+      3. An MPI C compiler exists, compiles/links a minimal MPI_Init/MPI_Barrier
+         program, and the configured MPI launcher runs it with the expected
+         communicator size (catching broken PMI/PMIx singletons, fabric/OFI
+         misconfigurations, missing shared libraries, or hung launchers).
+
+    Aborts immediately via error() + end(-1) before building TAU if any check
+    fails.  Skipped when no MPI or SLURM tests are scheduled (e.g. --tests
+    filtering to serial tests or minimal=True).
+    """
+    needs_mpi = bool((config.mpi or "").strip()) and any(
+        (mpi in tc.arguments) or any(t.useMPI for t in tc.tests)
+        for tc in buildApps
+    )
+    seq_launcher = _extract_launcher(config.seqBefore)
+    mpi_launcher = _extract_launcher(config.mpiBefore, config.mpiCommand) if needs_mpi else ""
+    seq_uses_slurm = (os.path.basename(seq_launcher) == "srun") if seq_launcher else False
+    mpi_uses_slurm = (os.path.basename(mpi_launcher) == "srun") if mpi_launcher else False
+
+    if not needs_mpi and not seq_uses_slurm:
+        output("No MPI or SLURM tests scheduled — skipping MPI/SLURM sanity check.")
         return
 
-    for partition in sorted(partitions):
-        output(f"Checking SLURM partition availability: {partition}")
-        retval = systemq(
-            f"sinfo -p {partition} -h -t idle,alloc,mixed,reserved -o \"%n\" | grep -q ."
-        )
-        if retval != 0:
-            error(f"No available nodes in SLURM partition '{partition}' — aborting test run!")
-            end(-1)
-        retval = systemq(
-            f"srun -p {partition} --job-name=health_check --immediate=5 true"
-        )
-        if retval != 0:
-            error(f"srun timed out on SLURM partition '{partition}' — aborting test run!")
+    outputHeader("Pre-build MPI / Launcher Sanity Check")
+
+    # 1. Verify required launcher executable(s) exist in PATH.
+    for role, launcher, raw_cmd in [
+        ("MPI launcher", mpi_launcher, config.mpiBefore),
+        ("sequential launcher", seq_launcher if seq_uses_slurm else "", config.seqBefore),
+    ]:
+        if not launcher:
+            continue
+        rc, out, to = _run_check_cmd(f"which {shlex.quote(launcher)}", timeout=15)
+        if to or rc != 0:
+            reason = _summarize_cmd_error(out, to, 15)
+            error(
+                f"MPI sanity check failed: {role} '{html.escape(launcher)}' "
+                f"(from '{html.escape(raw_cmd)}') not found in PATH ({reason}) "
+                "— aborting before building TAU!"
+            )
             end(-1)
 
-        output(f"SLURM partition '{partition}': nodes available.")
+    # 2. Verify SLURM availability & immediate allocation (handles default partition too).
+    if mpi_uses_slurm or seq_uses_slurm:
+        checkSlurmAvailability(config, check_mpi=mpi_uses_slurm, check_seq=seq_uses_slurm)
+
+    if not needs_mpi:
+        return
+
+    # 3. Locate an MPI C compiler wrapper.
+    candidates = _mpi_c_compiler_candidates(config)
+    mpicc = ""
+    for cand in candidates:
+        rc, _, _ = _run_check_cmd(f"which {shlex.quote(cand)}", timeout=15)
+        if rc == 0:
+            mpicc = cand
+            break
+    if not mpicc:
+        error(
+            f"MPI sanity check failed: no MPI C compiler found in PATH "
+            f"(tried: {', '.join(candidates)}) — aborting before building TAU!"
+        )
+        end(-1)
+
+    # 4. Compile & run a minimal MPI smoke test inside TEST_ROOT (shared FS on clusters).
+    base_dir = TEST_ROOT if (TEST_ROOT and os.path.isdir(TEST_ROOT)) else None
+    tmpdir = tempfile.mkdtemp(prefix=".tau_mpi_sanity_", dir=base_dir)
+    started_mpi_daemon = False
+    try:
+        src_path = os.path.join(tmpdir, "mpi_sanity.c")
+        bin_path = os.path.join(tmpdir, "mpi_sanity")
+        with open(src_path, "w") as sf:
+            sf.write(_MPI_SANITY_SRC)
+
+        compile_cmd = f"{shlex.quote(mpicc)} {shlex.quote(src_path)} -o {shlex.quote(bin_path)}"
+        rc, out, to = _run_check_cmd(compile_cmd, timeout=60)
+        if to or rc != 0:
+            reason = _summarize_cmd_error(out, to, 60)
+            error(
+                f"MPI sanity check failed: could not compile/link minimal MPI program "
+                f"with '{html.escape(mpicc)}' (rc={rc}: {reason}) — aborting before building TAU!"
+            )
+            end(-1)
+
+        if config.mpiStartup:
+            rc, out, to = _run_check_cmd(config.mpiStartup, timeout=60)
+            if to or rc != 0:
+                reason = _summarize_cmd_error(out, to, 60)
+                error(
+                    f"MPI sanity check failed: mpiStartup '{html.escape(config.mpiStartup)}' "
+                    f"failed (rc={rc}: {reason}) — aborting before building TAU!"
+                )
+                end(-1)
+            started_mpi_daemon = True
+
+        mpi_prefix = config.mpiBefore.strip()
+        if mpi_uses_slurm:
+            mpi_prefix = _inject_srun_flags(
+                mpi_prefix, ["--job-name=tau_mpi_sanity", "--immediate=15"]
+            )
+        env_str = getEnvString(config)
+        env_part = f" --env {env_str}" if env_str else ""
+        after_part = f" {config.mpiAfter.strip()}" if config.mpiAfter.strip() else ""
+        launch_cmd = f"{mpi_prefix}{env_part} {shlex.quote(bin_path)}{after_part}".strip()
+
+        rc, out, to = _run_check_cmd(launch_cmd, timeout=60)
+        if to:
+            error(
+                f"MPI sanity check failed: '{html.escape(launch_cmd)}' timed out after 60s "
+                "— MPI launch or MPI_Barrier hung; aborting before building TAU!"
+            )
+            end(-1)
+        if rc != 0:
+            reason = _summarize_cmd_error(out, to, 60)
+            error(
+                f"MPI sanity check failed: '{html.escape(launch_cmd)}' exited with code {rc} "
+                f"({reason}) — aborting before building TAU!"
+            )
+            end(-1)
+
+        matches = re.findall(r"TAU_MPI_SANITY_OK size=(\d+)", out)
+        if not matches:
+            error(
+                f"MPI sanity check failed: '{html.escape(launch_cmd)}' exited 0 but did not "
+                "emit expected MPI_Init/MPI_Barrier output — aborting before building TAU!"
+            )
+            end(-1)
+        if len(matches) > 1:
+            error(
+                f"MPI sanity check failed: expected 1 rank-0 message from '{html.escape(launch_cmd)}' "
+                f"but saw {len(matches)} (sizes={matches}) — launcher is spawning independent "
+                "singleton processes instead of a unified MPI communicator (PMI/PMIx mismatch?); "
+                "aborting before building TAU!"
+            )
+            end(-1)
+
+        actual_size = int(matches[0])
+        expected_ranks = _extract_mpi_ranks(config.mpiBefore)
+        if expected_ranks and expected_ranks > 1 and actual_size != expected_ranks:
+            error(
+                f"MPI sanity check failed: requested {expected_ranks} ranks via "
+                f"'{html.escape(config.mpiBefore)}' but MPI_Comm_size reported {actual_size} "
+                "— aborting before building TAU!"
+            )
+            end(-1)
+
+        output(
+            f"MPI sanity check passed: {mpicc} + '{html.escape(config.mpiBefore.strip())}' "
+            f"executed {actual_size} rank(s) cleanly."
+        )
+    finally:
+        if started_mpi_daemon and config.mpiShutdown:
+            _run_check_cmd(config.mpiShutdown, timeout=30)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def RunAllTests(config, buildApps):
@@ -1899,71 +2259,61 @@ def RunAllTests(config, buildApps):
             warning(tauBuild.execArgs + " not built! Skipping tests!")
 ######################################################################
 
-_parser = argparse.ArgumentParser(
-    description="TAU regression worker — runs on the remote test machine.",
-    usage="tau_regression.py <configuration> [run_root] [--tests DIR ...]",
-)
-_parser.add_argument("configuration",
-                     help="Config name from configs.py")
-_parser.add_argument("run_root", nargs="?", default=os.environ.get("HOME", "/tmp"),
-                     help="Root directory for the test tree (default: $HOME)")
-_parser.add_argument(
-    "--tests", nargs="+", metavar="DIR",
-    help="Restrict to tests whose buildDir matches one of these names. "
-         "TAU configurations with no matching tests are skipped entirely, "
-         "so only the necessary TAU builds are performed.",
-)
-_args = _parser.parse_args()
+if __name__ == "__main__":
+    _parser = argparse.ArgumentParser(
+        description="TAU regression worker — runs on the remote test machine.",
+        usage="tau_regression.py <configuration> [run_root] [--tests DIR ...]",
+    )
+    _parser.add_argument("configuration",
+                         help="Config name from configs.py")
+    _parser.add_argument("run_root", nargs="?", default=os.environ.get("HOME", "/tmp"),
+                         help="Root directory for the test tree (default: $HOME)")
+    _parser.add_argument(
+        "--tests", nargs="+", metavar="DIR",
+        help="Restrict to tests whose buildDir matches one of these names. "
+             "TAU configurations with no matching tests are skipped entirely, "
+             "so only the necessary TAU builds are performed.",
+    )
+    _args = _parser.parse_args()
 
-selectedConfig = _args.configuration
-dirsuf = "-" + selectedConfig
+    selectedConfig = _args.configuration
+    dirsuf = "-" + selectedConfig
 
-run_prefix = _args.run_root
+    run_prefix = _args.run_root
 
-if not os.access(run_prefix, os.W_OK):
-    error("INVALID RUN DIRECTORY: "+run_prefix)
-    sys.exit(1)
+    if not os.access(run_prefix, os.W_OK):
+        error("INVALID RUN DIRECTORY: "+run_prefix)
+        sys.exit(1)
 
-if selectedConfig not in configs.configurations:
-    error("couldn't find config for: " + selectedConfig)
-    end(-1)
+    if selectedConfig not in configs.configurations:
+        error("couldn't find config for: " + selectedConfig)
+        end(-1)
 
-config=configs.configurations[selectedConfig]
+    config=configs.configurations[selectedConfig]
 
-#configFound = False
-#for config_it in configs.configurations:
-#    if config_it.name == selectedConfig:
-#        config = config_it
-#        configFound = True
+    #############################
 
-#if configFound == False:
-#    error("couldn't find config for: " + selectedConfig)
-#    end(-1)
-
-
-#############################
-
-TEST_ROOT = configs.test_root(run_prefix, selectedConfig)
-TAU_ROOT = TEST_ROOT + "/tau2"
-
-# config.basedir overrides run_prefix for the test tree root.  Useful when
-# invoking tau_regression.py directly against a hand-built or pre-existing
-# TAU tree that lives at a path unrelated to the automated pipeline's runroot.
-# (Note: this is independent of config.runroot, which controls where runtests.py
-# rsyncs files and is the normal way to redirect the full automated run.)
-if config.basedir != "":
-    TEST_ROOT = configs.test_root(config.basedir, selectedConfig)
+    TEST_ROOT = configs.test_root(run_prefix, selectedConfig)
     TAU_ROOT = TEST_ROOT + "/tau2"
 
-os.environ["TAU_ROOT"] = TAU_ROOT
-os.environ["TEST_ROOT"] = TEST_ROOT
+    # config.basedir overrides run_prefix for the test tree root.  Useful when
+    # invoking tau_regression.py directly against a hand-built or pre-existing
+    # TAU tree that lives at a path unrelated to the automated pipeline's runroot.
+    # (Note: this is independent of config.runroot, which controls where runtests.py
+    # rsyncs files and is the normal way to redirect the full automated run.)
+    if config.basedir != "":
+        TEST_ROOT = configs.test_root(config.basedir, selectedConfig)
+        TAU_ROOT = TEST_ROOT + "/tau2"
 
-now = datetime.datetime.now()
-config.regressionDate = now.strftime("%D")
-config.regressionTime = now.strftime("%T")
+    os.environ["TAU_ROOT"] = TAU_ROOT
+    os.environ["TEST_ROOT"] = TEST_ROOT
+
+    now = datetime.datetime.now()
+    config.regressionDate = now.strftime("%D")
+    config.regressionTime = now.strftime("%T")
 
 
-print("""<!DOCTYPE html>
+    print("""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><style>
 body {
     background: #1a1a2e;
@@ -2034,78 +2384,84 @@ function toggleAll(open) {
 </div>
 """)  # <PRE>
 
-if chdir(TAU_ROOT) != 0:
-    error("TAU_ROOT not found — cannot continue")
-    end(-1)
+    if chdir(TAU_ROOT) != 0:
+        error("TAU_ROOT not found — cannot continue")
+        end(-1)
 
-system("git branch", timeout=0, reportTime=False)
-system("git log -1 --pretty=format:'%h  %ad  %s' --date=format:'%Y-%m-%d %H:%M'", timeout=0, reportTime=False)
-try:
-    config.gitHash = check_output(["git", "rev-parse", "HEAD"]).rstrip()
-except Exception:
-    config.gitHash = b"unknown"
+    system("git branch", timeout=0, reportTime=False)
+    system("git log -1 --pretty=format:'%h  %ad  %s' --date=format:'%Y-%m-%d %H:%M'", timeout=0, reportTime=False)
+    try:
+        config.gitHash = check_output(["git", "rev-parse", "HEAD"]).rstrip()
+    except Exception:
+        config.gitHash = b"unknown"
 
-outputHeader("Configuration: " + config.name)
+    outputHeader("Configuration: " + config.name)
 
-if config.path != "":
-    prependPath(config.path, config)
-# TODO: Re-enable ld-library-path if turning it off has no effect.
-# if config.ld_library_path != "":
-#    prependVar("LD_LIBRARY_PATH", config.ld_library_path, config)
+    if config.path != "":
+        prependPath(config.path, config)
+    # TODO: Re-enable ld-library-path if turning it off has no effect.
+    # if config.ld_library_path != "":
+    #    prependVar("LD_LIBRARY_PATH", config.ld_library_path, config)
 
-system("echo $PYTHONPATH", timeout=0, reportTime=False)
+    system("echo $PYTHONPATH", timeout=0, reportTime=False)
 
-config.prepare()
+    config.prepare()
 
-applyConfigEnvironment(config)
+    applyConfigEnvironment(config)
 
-outputHeader("Startup")
-prependPath(TAU_ROOT + "/" + config.arch + "/bin", config)
-#prependVar("LD_LIBRARY_PATH", TAU_ROOT + "/" + config.arch + "/lib", config)
-#system("which amdclang")
+    outputHeader("Startup")
+    prependPath(TAU_ROOT + "/" + config.arch + "/bin", config)
+    #prependVar("LD_LIBRARY_PATH", TAU_ROOT + "/" + config.arch + "/lib", config)
+    #system("which amdclang")
 
-spackString=""
-useSpack=False
-for package in config.spack:
-    #system("spack load --first "+package)
-    if not useSpack:
-        useSpack = True
-    spackString=spackString+" "+package
+    spackString=""
+    useSpack=False
+    for package in config.spack:
+        #system("spack load --first "+package)
+        if not useSpack:
+            useSpack = True
+        spackString=spackString+" "+package
 
-if useSpack:
-    spackCommand="spack load --sh --first "+spackString
-    print(spackCommand)
-    spackEnv=check_output([spackCommand], shell=True, universal_newlines=True)
-    spackEnv="eval "+spackEnv+" " 
-printSysInfo(config)
+    if useSpack:
+        spackCommand="spack load --sh --first "+spackString
+        print(html.escape(spackCommand))
+        try:
+            spackEnv=check_output([spackCommand], shell=True, stderr=subprocess.STDOUT, universal_newlines=True)
+        except subprocess.CalledProcessError as exc:
+            error(
+                f"spack load failed for '{html.escape(spackString.strip())}' "
+                f"(rc={exc.returncode}: {html.escape((exc.output or '').strip()[:300])}) "
+                "— aborting before building TAU!"
+            )
+            end(-1)
+        spackEnv="eval "+spackEnv+" "
+    printSysInfo(config)
 
-checkSlurmAvailability(config)
+    buildApps = build_app_list(
+        useOpenMPOMPT=config.useOpenMPOMPT,
+        cuda=config.cuda,
+        rocm=config.rocm,
+        level_zero=config.level_zero,
+        minimal=config.minimal,
+        python=config.python,
+    )
 
-systemq("rm -rf " + TAU_ROOT + "/" + config.arch)
+    buildApps = filter_buildapps(buildApps, _args.tests)
 
-system("which " + config.mpiCommand)
+    checkMpiSanity(config, buildApps)
 
-buildApps = build_app_list(
-    useOpenMPOMPT=config.useOpenMPOMPT,
-    cuda=config.cuda,
-    rocm=config.rocm,
-    level_zero=config.level_zero,
-    minimal=config.minimal,
-    python=config.python,
-)
+    systemq("rm -rf " + TAU_ROOT + "/" + config.arch)
 
-buildApps = filter_buildapps(buildApps, _args.tests)
+    buildApps = batchBuildTAU(config, buildApps)
 
-buildApps = batchBuildTAU(config, buildApps)
+    #############
 
-#############
+    if config.mpiStartup != "":
+        system(config.mpiStartup)
 
-if config.mpiStartup != "":
-    system(config.mpiStartup)
+    RunAllTests(config, buildApps)
 
-RunAllTests(config, buildApps)
+    if config.mpiShutdown != "":
+        system(config.mpiShutdown)
 
-if config.mpiShutdown != "":
-    system(config.mpiShutdown)
-
-end(0)
+    end(0)

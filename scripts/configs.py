@@ -22,6 +22,7 @@ class Configuration:
         self.name = name
         self.description = ""
         self.arch = arch
+        self.baseConfig = ""
         self.path = ""
 # I think -j is causing the intermittant compile problems
         self.makeExtra = " -j"
@@ -45,7 +46,6 @@ class Configuration:
         self.cudatestdir = ""
         self.rocm = ""
         self.oneapi=""
-        self.path = ""
         self.hdf5 = "/usr/local/packages/hdf5-1.8.6/"
         self.tauMake = "make"
         self.mpiCommand = "mpirun"
@@ -78,7 +78,6 @@ class Configuration:
         self.useropt=" -syscall  -useropt=-g\\ -O2\\ -DDEBUG_ASSERT\\ -DTAU_EXECINFO"
         self.opencl=""
         self.level_zero=""
-        self.opencl=""
         self.spack = []
         self.envVars = {'TAU_TRACK_SIGNALS':'1'}
         self.url = ""
@@ -333,10 +332,8 @@ tmpconfig.mpi = "-mpi"
 #tmpconfig.rocm = "-roctracer=/opt/rocm-5.5.0/roctracer/ -rocprofiler=/opt/rocm-5.5.0/rocprofiler/ -rocm"
 tmpconfig.url = "omnia"
 
-tmpconfig = odyssey_rocm = ModuleConfiguration("odyssey_rocm", "x86_64")
-tmpconfig.baseConfig = "-arch=x86_64 -c++=amdclang++ -cc=amdclang"
-tmpconfig.f90 = "-fortran=amdflang"   #This mpi is backed by gcc but built with rocm. 
-tmpconfig.envVars |= {'LEGACY_FFLAGS': ''}  # amdflang rejects -std=legacy
+tmpconfig = odyssey_rocm = ModuleConfiguration("odyssey_rocm", "craycnl")
+tmpconfig.baseConfig = "-c++=CC -cc=cc"
 tmpconfig.pdt_config = " -GNU "
 #tmpconfig.papi = "-papi=/packages/papi/6.0.0.1" # /packages/papi/6.0.0.1"
 tmpconfig.libunwind = "-unwind=download"
@@ -347,8 +344,10 @@ tmpconfig.mpiBefore = "srun -n 4"
 tmpconfig.mpiCommand = "srun"
 #"mpirun -np 4 -mca prte_forward_signals SIGQUIT,SIGINT,SIGTERM,SIGUSR1,SIGUSR2"
 tmpconfig.mpi = "-mpi"
-tmpconfig.modules=[ "rocm/7.1.1" ]#"mvapich/4.1-rocm7.1.1" ]
-tmpconfig.spack = [ "mpich" ]
+# Swapping gcc-native -> gcc/12.2.0 removes /opt/rh/gcc-toolset-13/root/usr/bin
+# from PATH so Cray's cc wrapper is not shadowed, while keeping native Cray PE
+# (PrgEnv-gnu + cray-mpich + srun) alongside rocm/7.1.1.
+tmpconfig.modules = [ "PrgEnv-gnu", "gcc/12.2.0", "rocm/7.1.1" ]
 #tmpconfig.useropt = " -useropt=-g3\ -Og"
 #tmpconfig.modules=["rocm/7.1.1", "java"] #[ "rocm/5.5.0" , "mpich/031021-llvm12" ] "openmpi/4.1.8_gcc13.2.0",
 #tmpconfig.spack = ["openmpi"]
@@ -430,9 +429,12 @@ tmpconfig.pdt_config = " -GNU "
 tmpconfig.papi = "-papi=/packages/papi/6.0.0.1"
 #tmpconfig.libunwind = "-unwind=download"
 tmpconfig.mpiBefore = "srun -p greece  -n 4"
+tmpconfig.mpiCommand = "srun"
 tmpconfig.mpi = "-mpi"
 #tmpconfig.useropt = " -useropt=-g\\ -O2"
-tmpconfig.modules=[ "craype-x86-rome", "PrgEnv-nvidia", "gcc/12.2.0" ] #, "nvhpc/23.5" ]
+# Use Cray PE UCX (craype-network-ucx + cray-mpich-ucx/8.1.30) to bypass
+# gilgamesh's broken /opt/mvapich/tpl/lib/libefa.so.1 pulled in by Cray OFI.
+tmpconfig.modules=[ "craype-x86-rome", "PrgEnv-nvidia", "craype-network-ucx", "cray-mpich-ucx/8.1.30", "gcc/12.2.0" ] #, "nvhpc/23.5" ]
 # No spack mpich: use Cray PE MPI (cray-mpich) so mpicc/mpicxx wrap nvc/nvc++
 tmpconfig.cleanBFD=True
 tmpconfig.envVars |= {'EXTRA_FFLAGS':'-noswitcherror'}

@@ -519,7 +519,8 @@ def launch_tests(active_cfgs: list, date_dir: pathlib.Path, serial: bool = False
             ): cfg.name
             for cfg in active_cfgs
         }
-        for fut, name in futures.items():
+        for fut in concurrent.futures.as_completed(futures):
+            name = futures[fut]
             try:
                 rc = fut.result()
             except Exception as exc:
@@ -555,7 +556,6 @@ def check_and_publish(date_dir: pathlib.Path, lprint, timing_lines: list | None 
             continue
         if "Failure: Encountered" in text:
             log_error(f"Failure marker found in {html_file.name}")
-            break
 
     passed  = not _errors
     subject = "TAU Regression OK" if passed else "TAU Regression Encountered Errors"
